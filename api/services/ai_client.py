@@ -115,10 +115,17 @@ _SYSTEM_PROMPT: str = (
     "optionally a short English note. You respond with a single JSON "
     "object and nothing else. The JSON object has these keys:\n"
     '  "pinyin": string, tone-marked pinyin for the whole sentence\n'
-    '  "english": string, a literal English translation\n'
+    '  "english": string, a literal English translation (the kind a '
+    "dictionary would give)\n"
     '  "meaning": string, a richer English gloss that captures the '
     "communicative intent — what the speaker is actually trying to say, "
-    'not just a word-for-word rendering\n'
+    "not just a word-for-word rendering. This MUST be a different string "
+    "from `english` and MUST add information the literal translation "
+    "omits (situational context, emotional register, the speaker's "
+    "intent, implied subject/object). If the literal and the rich gloss "
+    "would be identical, the sentence has no hidden intent — set "
+    "`meaning` to a one-sentence paraphrase that explains WHEN and WHY "
+    "a learner would use this sentence, not just WHAT it says.\n"
     '  "words": list of single-character or contiguous tokens, in order\n'
     '  "word_refs": list of tone-marked pinyin, one per entry in "words"\n'
     '  "groups": list of { "id": slug, "display_name": human, '
@@ -127,7 +134,8 @@ _SYSTEM_PROMPT: str = (
     "sentence whose opposite is also a word the user likely knows\n"
     "\n"
     "Never include prose outside the JSON. Never echo the prompt. "
-    "Never include the user's note in the response."
+    "Never include the user's note in the response. Never set "
+    "`meaning` equal to `english`."
 )
 
 
