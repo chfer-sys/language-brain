@@ -219,15 +219,11 @@ def test_type_mismatch_raises(tmp_path: Path) -> None:
 
 
 def test_unit_type_must_match_in_unit_dict(tmp_path: Path) -> None:
-    """If the caller passes a unit whose ``type`` field would route it
-    to a different subdirectory than the path computed from a
-    separately-supplied ``unit_type`` argument, that's a programming
-    error. The writer trusts ``unit["type"]`` as the source of truth,
-    so a standalone ``unit_type`` mismatch surface is not exposed by
-    ``write_unit``. ``unit_path`` enforces the type whitelist on its
-    own; verify that."""
-    with pytest.raises(ValueError):
-        unit_path(str(tmp_path), "sentence", "x")  # path lookup is fine
+    """``unit_path`` enforces the type whitelist on its own. A bogus
+    ``unit_type`` argument must raise ``ValueError``; the path lookup
+    itself is not the locus of the unit-dict-type-mismatch check
+    (since ``write_unit`` reads ``unit["type"]`` as the source of truth
+    and does not accept an external ``unit_type``)."""
     with pytest.raises(ValueError):
         unit_path(str(tmp_path), "garbage", "x")  # bad type rejected
 

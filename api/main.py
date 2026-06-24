@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from api.config import configure_root_logger, settings
+from api.routes import add_sentence as add_sentence_route
 
 configure_root_logger()
 
@@ -22,6 +23,11 @@ app = FastAPI(
         "See .specs/language-brain.md for the full design."
     ),
 )
+
+# T7: register the propose-labels route. The commit route (T19) and
+# the search routes (T20+) are added in later tasks; this router is
+# the first non-stub endpoint.
+app.include_router(add_sentence_route.router)
 
 
 @app.get("/healthz")
