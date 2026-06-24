@@ -1,0 +1,15 @@
+.env
+.env.*
+__pycache__/
+*.pyc
+node_modules/
+.svelte-kit/
+build/
+dist/
+vault/index/*.npy
+vault/index/*.faiss
+*.egg-info/
+.pytest_cache/
+.coverage
+.DS_Store
+*.log
