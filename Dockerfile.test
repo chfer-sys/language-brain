@@ -1,0 +1,37 @@
+# Test image for language-brain.
+#
+# Pre-installs all runtime + dev dependencies so the per-test docker
+# run only needs to mount the source and execute pytest.
+#
+# Build:
+#     docker build -f Dockerfile.test -t kilo-language-brain-test .
+#
+# Run tests:
+#     docker run --rm -v $(pwd):/work -w /work kilo-language-brain-test \
+#         pytest tests/ -v
+
+FROM python:3.12-slim
+
+# System deps that some Python wheels expect.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+
+# Install Python deps in a single layer to leverage Docker cache.
+# The runtime deps come from pyproject.toml's [project.dependencies]
+# and the dev deps from [project.optional-dependencies]. We pin a
+# couple of heavy packages to known-good versions.
+COPY pyproject.toml ./
+COPY api ./api
+COPY scripts ./scripts
+
+# Long pip timeout because torch + transformers are huge and the
+# host network is occasionally slow. Retry on transient failures.
+RUN pip install --no-cache-dir --default-timeout=600 --retries 5 -e ".[dev]"
+
+# Default: run pytest. Override with `docker run ... kilo-language-brain-test bash`.
+ENTRYPOINT ["pytest"]
+CMD ["tests/", "-v"]
