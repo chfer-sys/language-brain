@@ -194,3 +194,51 @@ def round_trip(vault_root: str, unit: dict) -> dict:
     result = read_unit(vault_root, unit_type, unit_id)
     result.pop("updated", None)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Listing helpers — used by reindex.py and the search route
+# ---------------------------------------------------------------------------
+
+
+def list_units_by_type(vault_root: str, unit_type: str) -> list[dict]:
+    """Return all units of ``unit_type`` under the vault, as a list
+    of dicts. Skips files that fail to deserialize (logged but not
+    raised) so a single corrupt file doesn't kill the whole list.
+
+    The result is sorted by unit id for determinism — important for
+    idempotent reindex per AC10.
+    """
+    _validate_unit_type(unit_type)
+    root = Path(vault_root) / "units" / _PLURAL_BY_TYPE[unit_type]
+    if not root.is_dir():
+        return []
+    out: list[dict] = []
+    for entry in sorted(root.glob("*.json")):
+        try:
+            with entry.open(encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                out.append(data)
+        except (OSError, json.JSONDecodeError):
+            # Skip corrupt files; the reindex script and search route
+            # should not crash on a single bad file. A future task
+            # can build a repair tool that flags these.
+            continue
+    return out
+
+
+def list_all_sentences(vault_root: str) -> list[dict]:
+    """Return all sentence units under the vault (sorted by id)."""
+    return list_units_by_type(vault_root, "sentence")
+
+
+def list_sentence_units_sorted(vault_root: str) -> list[dict]:
+    """Return all sentence units sorted by id (alias for clarity
+    when callers want to make sort order explicit)."""
+    return list_all_sentences(vault_root)
+
+
+def list_all_groups_from_disk(vault_root: str) -> list[dict]:
+    """Return all group units under the vault (sorted by id)."""
+    return list_units_by_type(vault_root, "group")
