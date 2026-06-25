@@ -121,6 +121,7 @@ def test_only_ai_client_imports_os_environ_for_key() -> None:
         Path("tests/api/test_config.py"),
         Path("tests/api/test_add_sentence_route.py"),
         Path("tests/api/test_key_safety.py"),  # this file
+        Path("tests/api/test_ac30_key_safety.py"),  # AC30 test, by design
     }
     offenders: list[str] = []
     for p in _python_sources():
