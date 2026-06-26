@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from api.config import configure_root_logger, settings
 from api.routes import add_sentence as add_sentence_route
 from api.routes import commit_sentence as commit_sentence_route
+from api.routes import search as search_route
 
 configure_root_logger()
 
@@ -26,11 +27,11 @@ app = FastAPI(
 )
 
 # T7: register the propose-labels route. T19 adds the commit-sentence
-# route on the same prefix; the search routes (T20+) are added in later
-# tasks. Both routers share the ``/api/sentences`` prefix, so the commit
-# endpoint is reachable at ``/api/sentences/commit``.
+# route on the same prefix; T20 adds the search route on its own
+# ``/api`` prefix so the full path is ``/api/search``.
 app.include_router(add_sentence_route.router)
 app.include_router(commit_sentence_route.router)
+app.include_router(search_route.router)
 
 
 @app.get("/healthz")

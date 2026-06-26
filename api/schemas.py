@@ -145,6 +145,54 @@ UnitType = Literal["sentence", "word", "group"]
 ConnectionKind = Literal["lexical", "semantic", "group", "opposite"]
 
 
+# ---------------------------------------------------------------------------
+# GET /api/search — search (T20+)
+# ---------------------------------------------------------------------------
+
+
+class SearchResultItem(BaseModel):
+    """One entry in a :class:`SearchResponse`.
+
+    Fields mirror SPEC §5.3:
+
+    * ``id`` — the unit's stable id.
+    * ``type`` — one of ``"sentence"`` or ``"word"`` (group units are
+      not returned by lexical search; they're surfaced via
+      ``/api/groups/{id}`` instead, per SPEC §5.3).
+    * ``name`` — the display string. For sentences, this is the
+      hanzi (``properties.hanzi``); for words, also hanzi.
+    * ``snippet`` — a secondary display string. For sentences and
+      words, this is the pinyin (``properties.pinyin``).
+    * ``score`` — the similarity score. For T20 (lexical only),
+      this is the Jaccard value over hanzi tokens, in ``(0.0, 1.0]``.
+    * ``kinds`` — the connection kinds that link the unit back to
+      the query's neighborhood. T20 leaves this empty for all hits
+      because lexical ranker is naive (it doesn't look at the
+      connection graph). T22/T23 will populate it from the
+      ``connections`` array on each unit.
+    """
+
+    id: str
+    type: str
+    name: str
+    snippet: str
+    score: float
+    kinds: list[str] = Field(default_factory=list)
+
+
+class SearchResponse(BaseModel):
+    """Body of the search response (SPEC §5.3).
+
+    ``query`` echoes the input string so the frontend can render
+    "results for X" without bookkeeping. ``results`` is the ranked
+    list — T20 sorts by Jaccard descending (tie-break by id
+    ascending) and caps at the requested ``limit``.
+    """
+
+    query: str
+    results: list[SearchResultItem]
+
+
 __all__ = [
     "CommitSentenceRequest",
     "CommitSentenceResponse",
@@ -152,5 +200,7 @@ __all__ = [
     "ProposedGroupOut",
     "ProposeSentencesRequest",
     "ProposeSentencesResponse",
+    "SearchResponse",
+    "SearchResultItem",
     "UnitType",
 ]
