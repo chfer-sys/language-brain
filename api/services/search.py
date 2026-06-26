@@ -2,10 +2,10 @@
 
 This module is the *service-layer* half of SPEC §5.3's search endpoint.
 T20 covers AC16 (lexical search); T21 adds AC17 (semantic search
-over the FAISS index). T22–T23 will wire kind toggles and type
-filters into the public entry point; T24 will enforce the
-``english``/``meaning`` payload hygiene invariants (AC20); T25
-will polish the snippet string hygiene (AC21).
+over the FAISS index). T22 wires the kinds toggle; T23 extends the
+``types`` filter to include ``group`` and adds :func:`group_search`.
+T24 will enforce the ``english``/``meaning`` payload hygiene
+invariants (AC20); T25 will polish the snippet string hygiene (AC21).
 
 Design for additive extension
 -----------------------------
@@ -101,29 +101,40 @@ SEMANTIC_THRESHOLD: float = 0.6
 
 @dataclass(frozen=True)
 class SearchHit:
-    """A single lexical search hit (T20 only).
+    """A single lexical search hit (T20+).
 
     Attributes
     ----------
     unit_id:
         The unit's stable id (e.g. ``"wo-xihuan-chi"`` for sentences,
-        ``"chī"`` for words).
+        ``"chī"`` for words, ``"basic-verbs"`` for groups).
     unit_type:
-        Either ``"sentence"`` or ``"word"``. Group units are out of
-        scope for lexical search per SPEC §5.3.
+        One of ``"sentence"``, ``"word"``, ``"group"``. Group hits
+        were added in T23 alongside the extended ``types`` filter.
     name:
         Display string. For sentences and words, this is the unit's
         ``properties.hanzi``. Hanzi never contains ASCII a-z runs of
-        length 3+, so the AC21 invariant is trivially satisfied.
+        length 3+, so the AC21 invariant is trivially satisfied. For
+        groups, this is the unit's ``properties.display_name``
+        (falling back to the slug id).
     snippet:
         Secondary display string. For sentences and words, this is
         the unit's ``properties.pinyin``. Pinyin contains accented
         vowels (ā á ǎ à …) rather than ASCII a-z runs of length 3+,
-        so the AC21 invariant is trivially satisfied at T20.
+        so the AC21 invariant is trivially satisfied at T20. For
+        groups, this is the slug id (e.g. ``"basic-verbs"``) — a
+        ASCII run of length 3+ appears only when the slug itself
+        contains one, which the caller controls. The group hit's
+        name and snippet therefore both satisfy AC21 forward-compat.
     score:
-        The Jaccard similarity over hanzi tokens between the query
-        and the unit. Always in ``(0.0, 1.0]`` because the ranker
-        drops zero-overlap hits before constructing the hit.
+        The similarity score between the query and the unit.
+        For sentence and word units, this is the Jaccard
+        similarity over hanzi tokens (always in ``(0.0, 1.0]``
+        because the ranker drops zero-overlap hits before
+        constructing the hit). For groups, this is the fraction
+        of query tokens that appear in the slug/display-name
+        haystack, plus a small prefix-match bonus, so the score
+        can be up to ``1.1``.
     """
 
     unit_id: str
@@ -138,10 +149,13 @@ class SearchHit:
 # ---------------------------------------------------------------------------
 
 
-#: Unit types that lexical search ranks over. Groups are intentionally
-#: excluded — SPEC §5.3 reserves ``/api/groups/{id}`` for group retrieval
-#: and lexical search only sees sentence + word units.
-_LEXICAL_TYPES: frozenset[str] = frozenset({"sentence", "word"})
+#: Unit types that lexical search ranks over. T23 adds ``"group"``
+#: alongside ``"sentence"`` and ``"word"`` so callers can filter
+#: the search response to groups only (per SPEC §5.3's expanded
+#: ``types`` query parameter). Group units still have their own
+#: canonical endpoint at ``/api/groups/{id}`` — search just gets a
+#: lexical pass over their slugs and display names.
+_LEXICAL_TYPES: frozenset[str] = frozenset({"sentence", "word", "group"})
 
 
 # ---------------------------------------------------------------------------
@@ -334,19 +348,20 @@ def lexical_search(
     limit: int = 20,
     types: list[str] | None = None,
 ) -> list[SearchHit]:
-    """Lexical search over sentence and word units.
+    """Lexical search over sentence, word, and group units.
 
     Returns up to ``limit`` :class:`SearchHit` objects sorted by
-    descending Jaccard similarity (tie-break by unit id ascending).
-    An empty query or empty matches return ``[]``.
+    descending score (Jaccard for sentence + word, substring
+    overlap for groups, tie-break by unit id ascending). An empty
+    query or empty matches return ``[]``.
 
-    ``types`` filters by unit type. ``None`` means all types
-    (sentence + word). Pass ``["sentence"]`` or ``["word"]`` to
-    restrict. Any value outside the closed set
-    ``{"sentence", "word"}`` makes the function return ``[]``
-    — this is the T20 guard against future callers passing group
-    or unknown filters; it deliberately fails closed so a typo
-    never silently returns wrong results.
+    ``types`` filters by unit type. ``None`` means all lexical types
+    (sentence + word + group). Pass any subset of
+    ``{"sentence", "word", "group"}`` to restrict. Any value outside
+    the closed set makes the function return ``[]`` — this is the
+    T20 guard against future callers passing unknown filters; it
+    deliberately fails closed so a typo never silently returns wrong
+    results.
 
     The function logs an INFO line at start and end of a
     successful call. Failures (e.g. unparseable ``types``)
@@ -359,14 +374,16 @@ def lexical_search(
         Filesystem path to the vault root.
     query:
         Raw query string. Will be tokenized via
-        :func:`api.services.lexical.tokenize_sentence`.
+        :func:`api.services.lexical.tokenize_sentence` for the
+        sentence/word pass and via :func:`group_search`'s own
+        alphanumeric tokenizer for the group pass.
     limit:
         Maximum number of hits to return. Must be a positive
         int; the route clamps to ``[1, 100]``.
     types:
         Optional filter. ``None`` means all lexical types;
-        otherwise must be a list containing only ``"sentence"``
-        and/or ``"word"``.
+        otherwise must be a list containing only values from
+        ``{"sentence", "word", "group"}``.
 
     Returns
     -------
@@ -396,6 +413,7 @@ def lexical_search(
 
     include_sentences = "sentence" in selected
     include_words = "word" in selected
+    include_groups = "group" in selected
 
     # Step 3 — load units. list_units_by_type is sorted by id and
     # skips corrupt files, so the I/O layer mirrors the ranker's
@@ -403,10 +421,22 @@ def lexical_search(
     sentences = list_units_by_type(vault_root, "sentence") if include_sentences else []
     words = list_units_by_type(vault_root, "word") if include_words else []
 
-    # Step 4 — pure rank.
+    # Step 4 — pure rank. Sentence + word pass uses Jaccard over
+    # hanzi tokens. The group pass uses :func:`group_search`,
+    # which scores over slug ids and display names. We merge them
+    # here so the limit applies to the combined top-N.
     ranked = lexical_rank(query_tokens, sentences, words)
+    group_hits: list[SearchHit] = []
+    if include_groups:
+        group_hits = group_search(vault_root, query, limit=limit)
+        # Convert the group SearchHits into ranker-shape tuples so
+        # _assemble_hits can consume them uniformly.
+        for hit in group_hits:
+            ranked.append((hit.unit_id, hit.unit_type, hit.score))
 
-    # Step 5 — limit.
+    # Step 5 — re-sort the combined ranking so group hits interleave
+    # with sentence/word hits by score, then trim to ``limit``.
+    ranked.sort(key=lambda entry: (-entry[2], entry[0]))
     if limit is not None and limit >= 0:
         ranked = ranked[:limit]
 
@@ -421,8 +451,48 @@ def lexical_search(
         uid = unit.get("id")
         if isinstance(uid, str) and uid:
             units_by_id[(uid, "word")] = unit
+    if include_groups:
+        for unit in list_units_by_type(vault_root, "group"):
+            uid = unit.get("id")
+            if isinstance(uid, str) and uid:
+                units_by_id[(uid, "group")] = unit
 
     hits = _assemble_hits(ranked, units_by_id)
+
+    # If the group ranker contributed, _assemble_hits fell back to
+    # empty name/snippet because groups don't carry hanzi/pinyin.
+    # Patch each group hit's name/snippet to the group's
+    # display_name and slug id so the AC21 invariant (no natural
+    # English in name/snippet) holds for groups too.
+    if include_groups and hits:
+        groups_index = {
+            (g.get("id"), "group"): g
+            for g in list_units_by_type(vault_root, "group")
+            if isinstance(g, dict) and isinstance(g.get("id"), str)
+        }
+        patched: list[SearchHit] = []
+        for hit in hits:
+            if hit.unit_type != "group":
+                patched.append(hit)
+                continue
+            unit = groups_index.get((hit.unit_id, "group"))
+            display_name = ""
+            if isinstance(unit, dict):
+                properties = unit.get("properties")
+                if isinstance(properties, dict):
+                    raw_dn = properties.get("display_name")
+                    if isinstance(raw_dn, str):
+                        display_name = raw_dn
+            patched.append(
+                SearchHit(
+                    unit_id=hit.unit_id,
+                    unit_type=hit.unit_type,
+                    name=display_name if display_name else hit.unit_id,
+                    snippet=hit.unit_id,
+                    score=hit.score,
+                )
+            )
+        hits = patched
 
     log.info(
         "lexical_search query=%r tokens=%d hits=%d limit=%d types=%s",
@@ -431,6 +501,151 @@ def lexical_search(
         len(hits),
         limit,
         sorted(selected),
+    )
+    return hits
+
+
+# ---------------------------------------------------------------------------
+# Group search (T23 — extends the ``types`` filter to include ``group``)
+# ---------------------------------------------------------------------------
+
+
+#: Bonus added to a group's score when the first character of the
+#: query's first token matches the first character of the group's
+#: slug id. This is a cheap "the query starts where the id starts"
+#: hint that pushes exact-prefix hits above substring hits. The
+#: value is small (0.1) so it never outweighs a meaningful fraction
+#: of matched tokens.
+_GROUP_ID_PREFIX_BONUS: float = 0.1
+
+
+def group_search(
+    vault_root: str,
+    query: str,
+    limit: int = 20,
+) -> list[SearchHit]:
+    """Lexical search over group units (T23).
+
+    Ranks every group unit by how many of the query's lowercase
+    tokens appear as a substring of either the group's
+    ``properties.display_name`` or its slug ``id``. Returns at most
+    ``limit`` :class:`SearchHit` objects sorted by score descending
+    (tie-break by unit id ascending).
+
+    Algorithm
+    ---------
+    1. If ``query`` is empty or non-string, return ``[]``. An empty
+       query can't share any token.
+    2. Read all group units via
+       :func:`api.services.unit_writer.list_units_by_type`. This
+       reads them off disk and skips corrupt files.
+    3. Tokenize the query into lowercase substrings. The tokenizer
+       is intentionally simple — :func:`api.services.lexical.
+       tokenize_sentence` would split per-character, which is wrong
+       for ASCII slug lookups (we want whole words like "basic" to
+       match a slug like ``basic-verbs``). So we lowercase the
+       query and split on non-alphanumeric runs.
+    4. For each group, build a single haystack of
+       ``"<slug_id> <display_name>"`` (lowercased) and count how many
+       query tokens appear as substrings of that haystack. Score is
+       ``matched / total_query_tokens``. If no token matches, the
+       group is skipped (no zero-score noise).
+    5. Add :data:`_GROUP_ID_PREFIX_BONUS` when the first character
+       of the first query token equals the first character of the
+       group's slug id — an exact-prefix hint.
+    6. Sort by ``(-score, unit_id)`` and slice to ``limit``.
+
+    Parameters
+    ----------
+    vault_root:
+        Filesystem path to the vault root.
+    query:
+        Raw query string. Non-string input returns ``[]``.
+    limit:
+        Maximum number of hits to return.
+
+    Returns
+    -------
+    list[SearchHit]
+        Ranked hits. Empty when the query is empty, no groups match,
+        or the vault has no groups. The hit's ``name`` is the
+        group's display_name (falling back to the slug id when
+        display_name is empty), and ``snippet`` is the slug id so
+        the response carries no natural-language English (AC21).
+        ``score`` is in ``(0.0, 1.1]``.
+    """
+    if not isinstance(query, str) or not query.strip():
+        return []
+
+    # Lowercase tokens, split on any non-alphanumeric character so
+    # ASCII slug queries like "basic-verbs" or "Basic Verbs" both
+    # produce {basic, verbs}.
+    raw_tokens = re.findall(r"[A-Za-z0-9]+", query.lower())
+    if not raw_tokens:
+        return []
+
+    groups = list_units_by_type(vault_root, "group")
+
+    ranked: list[tuple[str, str, float]] = []
+    first_token_first_char = raw_tokens[0][:1]
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        slug_id = group.get("id")
+        if not isinstance(slug_id, str) or not slug_id:
+            continue
+        properties = group.get("properties")
+        display_name = ""
+        if isinstance(properties, dict):
+            raw_dn = properties.get("display_name")
+            if isinstance(raw_dn, str):
+                display_name = raw_dn
+
+        haystack = f"{slug_id} {display_name}".lower()
+        if not haystack.strip():
+            continue
+
+        matched = sum(1 for tok in raw_tokens if tok in haystack)
+        if matched <= 0:
+            continue
+        score = matched / len(raw_tokens)
+        if slug_id[:1] and slug_id[:1].lower() == first_token_first_char:
+            score += _GROUP_ID_PREFIX_BONUS
+
+        ranked.append((slug_id, "group", float(score)))
+
+    ranked.sort(key=lambda entry: (-entry[2], entry[0]))
+    if limit is not None and limit >= 0:
+        ranked = ranked[:limit]
+
+    # Assemble hits: name = display_name (fallback to slug), snippet = slug id.
+    units_by_id = {(g.get("id"), "group"): g for g in groups if isinstance(g, dict)}
+    hits: list[SearchHit] = []
+    for unit_id, unit_type, score in ranked:
+        unit = units_by_id.get((unit_id, unit_type))
+        properties = unit.get("properties") if isinstance(unit, dict) else None
+        display_name = ""
+        if isinstance(properties, dict):
+            raw_dn = properties.get("display_name")
+            if isinstance(raw_dn, str):
+                display_name = raw_dn
+        name = display_name if display_name else unit_id
+        hits.append(
+            SearchHit(
+                unit_id=unit_id,
+                unit_type=unit_type,
+                name=name,
+                snippet=unit_id,
+                score=float(score),
+            )
+        )
+
+    log.info(
+        "group_search query=%r tokens=%d hits=%d limit=%d",
+        query,
+        len(raw_tokens),
+        len(hits),
+        limit,
     )
     return hits
 
@@ -705,6 +920,7 @@ def merge_hits_with_kinds(
 
 __all__ = [
     "SearchHit",
+    "group_search",
     "has_english_or_meaning_key",
     "has_natural_language_english",
     "lexical_rank",

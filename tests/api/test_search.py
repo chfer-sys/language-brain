@@ -322,8 +322,12 @@ def test_lexical_search_respects_types_filter(
 def test_lexical_search_types_filter_rejects_unknown_value(
     client: TestClient,
 ) -> None:
-    """An unknown ``types`` value returns 422, not a silent empty list."""
-    resp = client.get("/api/search", params={"q": "吃", "types": "group"})
+    """An unknown ``types`` value returns 422, not a silent empty list.
+
+    ``group`` is now a valid type (added in T23), so we use a clearly
+    bogus value here instead.
+    """
+    resp = client.get("/api/search", params={"q": "吃", "types": "bogus"})
     assert resp.status_code == 422
 
 

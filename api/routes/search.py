@@ -1,12 +1,12 @@
 """GET /api/search — search for units (T20+).
 
 T20 implements the lexical half of SPEC §5.3's search endpoint
-(AC16). T21 adds semantic search; T22–T23 wire the ``kinds``
-toggle into the response; T24 enforces the ``english``/``meaning``
-payload-hygiene invariants (AC20). This module is the *route
-layer* — it parses query params, calls into
-:mod:`api.services.search`, and shapes the JSON response per
-SPEC §5.3.
+(AC16). T21 adds semantic search; T22 wires the ``kinds``
+toggle into the response; T23 extends ``types`` to include
+``group``; T24 enforces the ``english``/``meaning`` payload
+hygiene invariants (AC20). This module is the *route layer* —
+it parses query params, calls into :mod:`api.services.search`,
+and shapes the JSON response per SPEC §5.3.
 
 Endpoint shape (SPEC §5.3)
 --------------------------
@@ -16,9 +16,10 @@ Endpoint shape (SPEC §5.3)
 * ``limit`` (optional, default ``20``, range ``1..100``) — maximum
   number of hits to return.
 * ``types`` (optional, comma-separated) — restrict to one or more
-  of ``sentence``, ``word``. Default = both. Group units are not
-  searchable via this endpoint; per SPEC §5.3 they live behind
-  ``/api/groups/{id}``.
+  of ``sentence``, ``word``, ``group``. Default = all three.
+  T23 added ``group``; group hits are still exposed through the
+  kinds-toggle plumbing as ``lexical`` matches (the group ranker
+  runs as part of the lexical pass).
 * ``kinds`` (optional, comma-separated) — connection-kind filter.
   T20 ignores ``kinds``; the field is parsed and stored in the
   response shape so T22/T23 can wire it without changing the
@@ -85,7 +86,7 @@ router = APIRouter(prefix="/api", tags=["search"])
 #: but duplicated here so the route can validate the CSV string
 #: before calling the service (and reject unknown values with
 #: 422 rather than silently returning []).
-_VALID_TYPES: frozenset[str] = frozenset({"sentence", "word"})
+_VALID_TYPES: frozenset[str] = frozenset({"sentence", "word", "group"})
 
 #: The closed set of valid ``kinds`` filter values. T20 ignores
 #: the filter but parses it; T22/T23 will use the set to gate
@@ -145,7 +146,7 @@ def search(
         default=None,
         description=(
             "Comma-separated unit types to include. Default: "
-            "sentence,word. Valid values: sentence, word."
+            "sentence,word,group. Valid values: sentence, word, group."
         ),
     ),
     kinds: str | None = Query(
