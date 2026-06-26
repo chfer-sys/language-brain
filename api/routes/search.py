@@ -63,7 +63,7 @@ from fastapi import APIRouter, Query
 
 from api.config import settings
 from api.schemas import SearchResponse, SearchResultItem
-from api.services.search import SearchHit, lexical_search
+from api.services.search import SearchHit, lexical_search, merge_hits, semantic_search
 
 log = logging.getLogger(__name__)
 
@@ -203,21 +203,42 @@ def search(
     service_types = parsed_types  # may be None
 
     vault_root = settings.vault
-    hits = lexical_search(
+
+    # T21: run both lexical and semantic passes and merge. T22
+    # will filter by the ``kinds`` toggle; T23 will filter by
+    # ``types``. For now, all hits flow through.
+    lexical_hits = lexical_search(
         vault_root,
         query=q,
         limit=limit,
         types=service_types,
     )
+    # Semantic search only operates on sentences (per SPEC §6 AC9,
+    # only sentences are in the FAISS index). When the caller
+    # restricts ``types`` to ``["word"]``, the semantic pass is
+    # a no-op anyway, but we still call it because the merge is
+    # cheap and the kinds-toggle in T22 may want to know what
+    # kinds contributed.
+    semantic_hits: list[SearchHit] = []
+    if (service_types is None) or ("sentence" in service_types):
+        semantic_hits = semantic_search(vault_root, query=q, limit=limit)
 
-    items = [_hit_to_item(h) for h in hits]
+    merged = merge_hits(lexical_hits, semantic_hits)
+    # Apply the limit AFTER merge so the user gets the best of
+    # both passes, not just the lexical top-N.
+    if limit > 0:
+        merged = merged[:limit]
+
+    items = [_hit_to_item(h) for h in merged]
 
     log.info(
-        "GET /api/search q=%r limit=%d types=%s kinds=%s returned=%d",
+        "GET /api/search q=%r limit=%d types=%s kinds=%s lexical=%d semantic=%d returned=%d",
         q,
         limit,
         parsed_types,
         parsed_kinds,
+        len(lexical_hits),
+        len(semantic_hits),
         len(items),
     )
 

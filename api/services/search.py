@@ -1,11 +1,11 @@
 """Search service for the language-brain vault (T20+).
 
 This module is the *service-layer* half of SPEC §5.3's search endpoint.
-T20 covers AC16 (lexical search) only; T21 will add semantic search,
-T22–T23 will wire kind toggles and type filters into the public
-entry point, T24 will enforce the ``english``/``meaning`` payload
-hygiene invariants (AC20), and T25 will polish the snippet string
-hygiene (AC21).
+T20 covers AC16 (lexical search); T21 adds AC17 (semantic search
+over the FAISS index). T22–T23 will wire kind toggles and type
+filters into the public entry point; T24 will enforce the
+``english``/``meaning`` payload hygiene invariants (AC20); T25
+will polish the snippet string hygiene (AC21).
 
 Design for additive extension
 -----------------------------
@@ -25,14 +25,27 @@ entry point. The pipeline is:
    unit dict for ``name`` and ``snippet``. This layer is the only
    place that introspects the unit dict's ``properties`` shape.
 
-3. :func:`lexical_search` — the I/O-bound public entry point.
-   Reads units from disk, calls the ranker, calls the assembler,
-   applies the limit, and returns the list.
+3. :func:`lexical_search` — the I/O-bound public entry point for
+   the lexical pass. Reads units from disk, calls the ranker,
+   calls the assembler, applies the limit, and returns the list.
 
-In T21 a parallel :func:`semantic_rank` will be added; T22 will
-combine the two ranks via a :func:`merge_kinds` helper that knows
-about the ``kinds`` toggle. Adding a new kind is additive — the
-existing lexical pass keeps running untouched.
+4. :func:`semantic_search` — the I/O-bound public entry point for
+   the semantic pass (T21). Loads the FAISS index from
+   ``<vault>/index/``, embeds the query via the provided
+   embedder (or :func:`api.services.embedder.get_embedder` if
+   ``None``), and returns hits whose cosine similarity to the
+   query exceeds ``threshold``. Only sentence units live in the
+   FAISS index (per SPEC §6 AC9), so all semantic hits have
+   ``unit_type="sentence"``.
+
+5. :func:`merge_hits` — deterministic union-by-id merger that
+   combines the lexical and semantic hit lists, keeping the
+   maximum score per id. This is what the route layer (T21) and
+   the future kinds toggle (T22) call after the per-kind passes.
+
+Adding a new kind is additive — the existing lexical pass keeps
+running untouched and a new ranker is unioned via
+:func:`merge_hits`.
 
 T24 hygiene helpers
 -------------------
@@ -47,10 +60,11 @@ AC20 invariant already holds at T20.
 
 I/O
 ---
-All disk reads go through :mod:`api.services.unit_writer`. This
-module never opens files directly, so the atomic-write contract
-of ``write_unit`` is preserved. No writes happen here — search is
-purely a read path.
+All disk reads go through :mod:`api.services.unit_writer` for
+unit dicts and :mod:`api.services.indexer` for the FAISS index.
+This module never opens files directly, so the atomic-write
+contract of ``write_unit`` is preserved. No writes happen here —
+search is purely a read path.
 """
 from __future__ import annotations
 
@@ -59,10 +73,25 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from api.services.embedder import Embedder, get_embedder
+from api.services.indexer import Index
 from api.services.lexical import jaccard, tokenize_sentence
-from api.services.unit_writer import list_units_by_type
+from api.services.unit_writer import list_units_by_type, read_unit
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+
+#: Cosine-similarity cutoff for semantic search (SPEC §6 AC17). A
+#: FAISS hit is included only if its cosine to the query embedding
+#: is strictly greater than this value. Default 0.6 matches the
+#: SPEC's stated threshold. Tunable per call via the ``threshold``
+#: kwarg on :func:`semantic_search`.
+SEMANTIC_THRESHOLD: float = 0.6
 
 
 # ---------------------------------------------------------------------------
@@ -508,10 +537,102 @@ def has_natural_language_english(s: str) -> bool:
     return _ASCII_LETTER_RUN.search(s) is not None
 
 
+# ---------------------------------------------------------------------------
+# Semantic search (T21 — SPEC §6 AC17)
+# ---------------------------------------------------------------------------
+
+
+def semantic_search(
+    vault_root: str,
+    query: str,
+    limit: int = 20,
+    threshold: float = SEMANTIC_THRESHOLD,
+    embedder: Embedder | None = None,
+) -> list[SearchHit]:
+    """Semantic search over sentence units via the FAISS index.
+
+    AC17 contract: returns sentence units whose ``meaning`` embedding
+    has cosine similarity to the query embedding strictly greater
+    than ``threshold``. Default ``threshold`` is ``SEMANTIC_THRESHOLD``
+    (0.6 per the SPEC).
+
+    The function never raises on a missing index — an empty vault
+    returns ``[]``. It also never raises on a missing unit file: a
+    FAISS hit whose sentence unit has been deleted from disk between
+    reindex and search is silently dropped (the next reindex will
+    reconcile; this is the same fall-forward policy used elsewhere
+    in the indexer).
+    """
+    if not isinstance(query, str) or not query.strip():
+        return []
+    if embedder is None:
+        embedder = get_embedder()
+    index = Index.load_or_empty(vault_root)
+    if len(index) == 0:
+        return []
+    query_vec = embedder.embed(query)
+    raw_hits = index.search(query_vec, k=limit)
+    sentences_by_id = {s["id"]: s for s in list_units_by_type(vault_root, "sentence")}
+    out: list[SearchHit] = []
+    for raw in raw_hits:
+        if raw.score <= threshold:
+            continue
+        unit = sentences_by_id.get(raw.unit_id)
+        if unit is None:
+            continue
+        properties = unit.get("properties", {})
+        if not isinstance(properties, dict):
+            continue
+        hanzi = properties.get("hanzi") if isinstance(properties.get("hanzi"), str) else ""
+        pinyin = properties.get("pinyin") if isinstance(properties.get("pinyin"), str) else ""
+        out.append(
+            SearchHit(
+                unit_id=raw.unit_id,
+                unit_type="sentence",
+                name=hanzi,
+                snippet=pinyin,
+                score=float(raw.score),
+            )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Hit merger (T21 — supports future kinds toggle T22)
+# ---------------------------------------------------------------------------
+
+
+def merge_hits(*hit_lists: list[SearchHit]) -> list[SearchHit]:
+    """Union of multiple hit lists, deduplicated by ``(unit_id, unit_type)``.
+
+    When the same key appears in more than one input list, the hit
+    with the maximum score wins; ties are broken by selecting the
+    first occurrence (left-to-right argument order). The merged list
+    is sorted by ``(-score, unit_id, unit_type)`` for determinism.
+    """
+    if not hit_lists:
+        return []
+    best_by_key: dict[tuple[str, str], SearchHit] = {}
+    for hit_list in hit_lists:
+        if not hit_list:
+            continue
+        for hit in hit_list:
+            key = (hit.unit_id, hit.unit_type)
+            existing = best_by_key.get(key)
+            if existing is None or hit.score > existing.score:
+                best_by_key[key] = hit
+    return sorted(
+        best_by_key.values(),
+        key=lambda h: (-h.score, h.unit_id, h.unit_type),
+    )
+
+
 __all__ = [
     "SearchHit",
     "has_english_or_meaning_key",
     "has_natural_language_english",
     "lexical_rank",
     "lexical_search",
+    "merge_hits",
+    "semantic_search",
 ]
