@@ -5,8 +5,8 @@ SPEC §2.4 ("Connections — the four link kinds") — the part that
 materializes connections directly on the unit file rather than
 computing them at query time.
 
-Scope of this task (T15 + T16 + T17)
-------------------------------------
+Scope of this task (T15 + T16 + T17 + T18)
+------------------------------------------
 T15 implemented the ``lexical`` kind for the sentence ↔ sentence
 direction (SPEC §6 AC12). T16 extends :func:`compute_connections`
 additively with the ``semantic`` kind (SPEC §6 AC13): symmetric
@@ -15,14 +15,20 @@ additively with the ``semantic`` kind (SPEC §6 AC13): symmetric
 ``_SEMANTIC_THRESHOLD`` (default ``0.6``, tunable per AC13).
 T17 adds the ``group`` kind (SPEC §6 AC14): symmetric ``group``
 edges between any two sentence units that share membership in at
-least one group unit (score fixed at 1.0). The future T18 will
-continue to extend the same entry point:
+least one group unit (score fixed at 1.0). T18 continues the
+additive extension with:
 
-* **T18** — adds the ``opposite`` kind (write symmetric ``opposite``
-  edges when ``antonyms`` reference another unit's id per AC15).
+* **T18** — the ``opposite`` kind (SPEC §6 AC15): for every word
+  pair (a, b) where ``a.properties.antonyms`` contains ``b.id`` OR
+  ``b.properties.antonyms`` contains ``a.id``, write a symmetric
+  ``opposite`` edge on each word with score = 1.0. As a side
+  effect, also write the missing ``antonyms`` entry on the OTHER
+  word so the relation is symmetric in the user-visible ``antonyms``
+  array as well. This pass operates on the ``word`` unit type and
+  shares the same I/O loop as the sentence-level passes.
 
-Algorithm (T15 + T16 + T17)
----------------------------
+Algorithm (T15 + T16 + T17 + T18)
+---------------------------------
 For every pair of sentence units in the vault, three independent
 passes are run and their results are unioned:
 
@@ -48,6 +54,23 @@ passes are run and their results are unioned:
    word↔sentence group-sharing edges are out of scope for T17
    (mirroring the sentence-only scope of the lexical and semantic
    passes); only sentence ↔ sentence group-sharing is considered.
+4. **Opposite (T18, AC15).** For every word unit, look at its
+   ``properties.antonyms`` list of OTHER word ids. For each pair
+   (a, b) that the vocabulary declares as antonyms (via a's
+   ``antonyms`` containing b, or vice versa), write a symmetric
+   ``opposite`` edge on each word with score = 1.0. The pass also
+   syncs the ``antonyms`` array on the OTHER word so that the
+   declared relation is symmetric in both the connection graph and
+   the user-visible ``antonyms`` field (this is the "writes
+   symmetrically" half of AC15). Unknown target ids — ids that
+   appear in a word's ``antonyms`` list but do not correspond to
+   any word unit on disk — are SKIPPED: no edge is written, and no
+   ``antonyms`` array sync is attempted. The rationale is that
+   the connection graph should not carry dangling references;
+   the user can declare the relation explicitly later by saving
+   the missing target word. (See the test
+   ``test_opposite_unknown_target_does_not_crash`` for the locked-in
+   behavior.) Self-loops are explicitly excluded.
 
 Self-loops are never written by any pass.
 
@@ -142,6 +165,19 @@ _GROUP_KIND: str = "group"
 #: compute — membership is a binary fact — so we store the score as
 #: a module constant rather than a parameter.
 _GROUP_SCORE: float = 1.0
+
+#: Connection kind for the opposite pass (T18 / SPEC §6 AC15). An
+#: ``opposite`` edge is written between two word units whose
+#: ``properties.antonyms`` arrays reference each other (in either
+#: direction). The kind is fixed by SPEC §2.4 / §6 AC15 so the
+#: constant exists primarily to keep typos from compiling.
+_OPPOSITE_KIND: str = "opposite"
+
+#: The fixed score attached to every ``opposite`` edge (SPEC §2.4
+#: / §6 AC15: "score = 1.0"). Antonymy is a binary relation — the
+#: word IS the opposite of the other, not "90% opposite" — so the
+#: score is a constant rather than a parameter.
+_OPPOSITE_SCORE: float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +661,273 @@ def _compute_sentence_group_edges(
     return edges_by_source, group_pairs, skipped
 
 
+def _antonyms_of_word(unit: dict[str, Any]) -> list[str]:
+    """Return the string ``antonyms`` list for a word unit.
+
+    Returns an empty list if ``properties.antonyms`` is missing,
+    not a list, or contains non-string entries. The helper is
+    defensive on purpose: a corrupt or partially-authored word
+    file should not crash the whole reindex. Non-string entries
+    are silently dropped (the caller treats them as if they were
+    absent) so a malformed ``antonyms`` list contributes fewer
+    edges rather than raising mid-loop.
+
+    Notes
+    -----
+    Per :mod:`api.services.word_registry`, ``properties.antonyms``
+    is a list of OTHER word ids (tone-marked pinyin). The list is
+    the declared antonym relation; the connection graph mirrors
+    it symmetrically (per SPEC §6 AC15).
+    """
+    properties = unit.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    raw_antonyms = properties.get("antonyms")
+    if not isinstance(raw_antonyms, list):
+        return []
+    return [a for a in raw_antonyms if isinstance(a, str) and a]
+
+
+def _compute_word_opposite_edges(
+    words: list[dict[str, Any]],
+) -> tuple[dict[str, list[tuple[str, float]]], int, set[tuple[str, str]]]:
+    """Compute the per-word ``opposite`` edge map from a word list.
+
+    This is the pure (I/O-free) algorithm layer for the
+    ``opposite`` kind (T18 / SPEC §6 AC15). It is structurally
+    different from the sentence-level helpers because the input
+    is a DECLARED RELATION (the ``antonyms`` array) rather than a
+    pairwise similarity computed from raw text.
+
+    Scope of T18
+    ------------
+    For T18, ONLY word ↔ word pairs are considered. The pass is
+    restricted to unit ids that exist as word units on disk — an
+    antonym id that points at a missing word file is silently
+    skipped (see the "Edges to unknown targets" decision below).
+    This avoids dangling references in the connection graph that
+    the search/UI passes would have to defensively resolve.
+
+    Edges to unknown targets
+    ------------------------
+    AC15 says: "every word pair (a, b) where ``a.properties.antonyms``
+    contains ``b.id`` OR ``b.properties.antonyms`` contains ``a.id``".
+    The plain reading would also cover the case where ``b.id``
+    points at a word that doesn't exist yet. We chose to SKIP that
+    case (no edge written) because:
+
+    * The connection graph is consumed by the search route, which
+      tries to resolve ``edge["to"]`` to a unit dict. A dangling
+      reference would silently drop out of results.
+    * Writing a connection to a non-existent word would create
+      on-disk state the user cannot inspect or delete until the
+      target word is created.
+    * The user retains full control: they can declare the antonym
+      relation again once the target word is saved.
+
+    The symmetry-sync set (the third return value) follows the
+    same rule: only pairs whose BOTH ids correspond to known word
+    units are added to the sync set.
+
+    Parameters
+    ----------
+    words:
+        The word unit dicts to consider. Words without a usable
+        string ``id`` are skipped (they can be neither the source
+        nor the target of an edge).
+
+    Returns
+    -------
+    edges_by_source:
+        Mapping ``word_id -> list of (other_id, score)`` tuples
+        that should be written as ``opposite`` edges on that
+        word's unit file. Order of the inner list matches pair
+        discovery order (lexicographic by ``other_id`` for
+        determinism — same convention as the sentence-level
+        helpers). Only keys for words with at least one outgoing
+        edge are present.
+    opposite_pairs:
+        Number of *unordered* word pairs (a, b) that are declared
+        antonyms by at least one side. Same semantics as
+        ``lexical_pairs`` / ``semantic_pairs`` / ``group_pairs``:
+        counts pairs, not edges. The same pair counted twice
+        (because both sides declare it) collapses to one.
+    symmetry_pairs:
+        Set of unordered (a, b) tuples (with sorted ids) that the
+        I/O layer must MIRROR in the ``properties.antonyms`` array
+        of the OTHER word. A pair (a, b) is in this set iff both
+        ``a`` and ``b`` are known word ids AND ``b`` is NOT yet
+        present in ``a.properties.antonyms``. (If both sides
+        already declare the relation, no sync is needed.)
+
+    Notes
+    -----
+    * Self-loops are explicitly excluded: a word whose
+      ``antonyms`` list contains its own id still does NOT get an
+      edge pointing to itself.
+    * Duplicate edges collapse to one (per (to, kind) tuple at the
+      I/O layer; the algorithm layer returns one edge per pair
+      regardless).
+    * Unknown target ids are SKIPPED — they contribute no edge
+      and no symmetry sync.
+    * Words with no ``antonyms`` array or an empty ``antonyms``
+      array contribute no edges.
+    * The symmetry-sync set is derived from the declared relation
+      at algorithm time. If a stale file is on disk (the other
+      side has a leftover ``antonyms`` entry that should be
+      removed), this module does NOT prune it — pruning the
+      ``antonyms`` array is a write-side concern that requires
+      an explicit "remove" operation rather than the upsert
+      contract this pass implements.
+    """
+    # Index known word ids. Only string, non-empty ids count.
+    word_ids: set[str] = {
+        w["id"]
+        for w in words
+        if isinstance(w.get("id"), str) and w.get("id")
+    }
+
+    # Build the pair set. An unordered pair (a, b) (with sorted
+    # ids) is in the set iff at least one side declares the
+    # relation via ``properties.antonyms``.
+    pair_set: set[tuple[str, str]] = set()
+    # Track, per pair, which side(s) declared the relation so the
+    # I/O layer can decide which ``antonyms`` arrays need a sync
+    # write. We store this as a set of "declared" sides to make
+    # the symmetry-sync logic easy to audit.
+    declared: dict[tuple[str, str], set[str]] = {}
+
+    for unit in words:
+        a_id = unit.get("id")
+        if not isinstance(a_id, str) or not a_id:
+            # A word without a usable id can't be a source. It
+            # also can't be a target (the target id is always
+            # referenced via a string), so dropping it here is
+            # safe.
+            continue
+        for b_id in _antonyms_of_word(unit):
+            if a_id == b_id:
+                # Self-loop guard. Defensive even though the
+                # caller is unlikely to declare a word as its
+                # own antonym.
+                continue
+            if b_id not in word_ids:
+                # Unknown target — skip. Documented choice; see
+                # the "Edges to unknown targets" note above.
+                continue
+            pair = (a_id, b_id) if a_id < b_id else (b_id, a_id)
+            pair_set.add(pair)
+            declared.setdefault(pair, set()).add(a_id)
+
+    # Build the edge map. Each unordered pair contributes one
+    # outgoing edge to each side.
+    edges_by_source: dict[str, list[tuple[str, float]]] = {}
+    for a_id, b_id in pair_set:
+        edges_by_source.setdefault(a_id, []).append(
+            (b_id, _OPPOSITE_SCORE)
+        )
+        edges_by_source.setdefault(b_id, []).append(
+            (a_id, _OPPOSITE_SCORE)
+        )
+
+    # Compute the symmetry-sync set: pairs where the OTHER side's
+    # ``antonyms`` array does not yet list this side. We need to
+    # look at the in-memory word list (not the disk state, which
+    # could be stale) to decide. For each pair, if side A
+    # declared the relation but side B's ``antonyms`` does not
+    # contain A, then B's file needs a sync write adding A.
+    # (And symmetrically.)
+    # Index the words by id for the second pass.
+    words_by_id: dict[str, dict[str, Any]] = {}
+    for w in words:
+        wid = w.get("id")
+        if isinstance(wid, str) and wid:
+            words_by_id[wid] = w
+
+    symmetry_pairs: set[tuple[str, str]] = set()
+    for pair in pair_set:
+        a_id, b_id = pair
+        a_word = words_by_id.get(a_id)
+        b_word = words_by_id.get(b_id)
+        if a_word is None or b_word is None:
+            # Defensive: the word_ids set already filtered these
+            # out, but if a future refactor relaxes that
+            # invariant we still want to skip cleanly here.
+            continue
+        a_antonyms = set(_antonyms_of_word(a_word))
+        b_antonyms = set(_antonyms_of_word(b_word))
+        if b_id not in a_antonyms:
+            symmetry_pairs.add(pair)
+        if a_id not in b_antonyms:
+            symmetry_pairs.add(pair)
+
+    opposite_pairs = len(pair_set)
+    return edges_by_source, opposite_pairs, symmetry_pairs
+
+
+def _sync_antonyms_array(
+    unit: dict[str, Any], other_id: str
+) -> bool:
+    """Append ``other_id`` to ``unit``'s ``properties.antonyms`` list
+    if not already present.
+
+    This is the AC15 "writes symmetrically" half: when an antonym
+    relation is declared on one side, the connector also writes
+    the OTHER side's ``antonyms`` array to keep the declared
+    relation symmetric. The helper mutates ``unit`` in place and
+    returns ``True`` iff a mutation occurred.
+
+    Behavior
+    --------
+    * If ``unit["properties"]["antonyms"]`` is a list and
+      ``other_id`` is already present: no-op. Returns ``False``.
+    * If ``unit["properties"]["antonyms"]`` is a list and
+      ``other_id`` is NOT present: append. Returns ``True``.
+    * If ``properties`` is missing or not a dict: repair to a
+      fresh dict containing ``antonyms: [other_id]``. Returns
+      ``True``.
+    * If ``properties.antonyms`` is present but not a list
+      (e.g. a string or ``None``): repair to a fresh list
+      containing ``other_id``. The previous malformed value is
+      discarded — the connector always wants a list shape for
+      ``antonyms`` because AC15 writes through it on every run.
+      Returns ``True``.
+
+    Parameters
+    ----------
+    unit:
+        The word unit dict to mutate. The dict is modified in
+        place — no copy is returned.
+    other_id:
+        The id of the OTHER word in the antonym pair. Must be a
+        non-empty string (the caller filters upstream).
+
+    Returns
+    -------
+    bool
+        ``True`` if the dict was mutated (antonym appended or
+        field repaired), ``False`` if no change was needed.
+    """
+    properties = unit.get("properties")
+    if not isinstance(properties, dict):
+        properties = {}
+        unit["properties"] = properties
+
+    raw = properties.get("antonyms")
+    if isinstance(raw, list):
+        if other_id in raw:
+            return False
+        raw.append(other_id)
+        return True
+
+    # Malformed (None, string, missing, etc.) — repair to a
+    # fresh list containing ``other_id``. This is the safest
+    # recovery: the connector's contract is that ``antonyms``
+    # is always a list after a successful run.
+    properties["antonyms"] = [other_id]
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Edge upsert
 # ---------------------------------------------------------------------------
@@ -776,6 +1079,54 @@ def _upsert_group_edge(
     return True
 
 
+def _upsert_opposite_edge(
+    unit: dict[str, Any],
+    other_id: str,
+    score: float = _OPPOSITE_SCORE,
+) -> bool:
+    """Upsert one ``opposite`` edge on ``unit``'s connections list.
+
+    Behavior is structurally identical to
+    :func:`_upsert_lexical_edge` / :func:`_upsert_semantic_edge` /
+    :func:`_upsert_group_edge`, but targets ``_OPPOSITE_KIND``
+    edges instead. See :func:`_upsert_lexical_edge` for the full
+    contract; the short version is:
+
+    * If an ``opposite`` connection to ``other_id`` already
+      exists, its ``score`` is updated in place at the same list
+      index. Returns ``False``.
+    * Otherwise a new
+      ``{"to": other_id, "kind": "opposite", "score": float(score)}``
+      entry is appended. Returns ``True``.
+    * Connections of OTHER kinds are never touched.
+    * A missing or non-list ``connections`` field is repaired to
+      an empty list.
+
+    ``score`` defaults to :data:`_OPPOSITE_SCORE` (``1.0``) per
+    SPEC §6 AC15. The parameter is retained for symmetry with the
+    other upsert helpers; in practice the opposite pass always
+    uses the constant.
+    """
+    connections = unit.get("connections")
+    if not isinstance(connections, list):
+        connections = []
+        unit["connections"] = connections
+
+    for idx, edge in enumerate(connections):
+        if (
+            isinstance(edge, dict)
+            and edge.get("kind") == _OPPOSITE_KIND
+            and edge.get("to") == other_id
+        ):
+            connections[idx]["score"] = float(score)
+            return False
+
+    connections.append(
+        {"to": other_id, "kind": _OPPOSITE_KIND, "score": float(score)}
+    )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -790,15 +1141,16 @@ def compute_connections(
 
     T15 implements the sentence ↔ sentence ``lexical`` kind
     (SPEC §6 AC12); T16 adds the ``semantic`` kind (AC13) on the
-    same entry point; T17 adds the ``group`` kind (AC14). The
-    function is designed so that T18 (opposite) can add its own
-    computation helper and union the results into the same
-    per-unit connections list.
+    same entry point; T17 adds the ``group`` kind (AC14). T18
+    adds the ``opposite`` kind (AC15), which operates on WORD
+    units (not sentences). The function is designed so that
+    future tasks can add more kinds additively to the same
+    entry point.
 
     Behavior
     --------
-    1. Reads every sentence unit and every group unit under
-       ``vault_root``.
+    1. Reads every sentence unit, every group unit, and every
+       word unit under ``vault_root``.
     2. Calls :func:`_compute_sentence_lexical_edges` to produce a
        per-sentence list of ``(other_id, score)`` pairs to write
        as ``lexical`` edges.
@@ -811,18 +1163,29 @@ def compute_connections(
     4. Calls :func:`_compute_sentence_group_edges` to produce a
        per-sentence list of ``(other_id, _GROUP_SCORE)`` pairs
        to write as ``group`` edges (T17 / AC14).
-    5. For each sentence that has outgoing edges of any kind,
-       merges the lexical, semantic, and group edge lists and
-       upserts each via the appropriate
-       :func:`_upsert_lexical_edge` / :func:`_upsert_semantic_edge` /
-       :func:`_upsert_group_edge` helper (preserving position of
-       existing same-kind edges). Each touched unit is written
+    5. Calls :func:`_compute_word_opposite_edges` to produce a
+       per-word list of ``(other_id, _OPPOSITE_SCORE)`` pairs to
+       write as ``opposite`` edges (T18 / AC15), plus a
+       symmetry-sync set of word pairs whose ``antonyms`` arrays
+       need to be mirrored.
+    6. For each unit (sentence or word) that has outgoing edges
+       of any kind, merges the per-kind edge lists and upserts
+       each via the appropriate :func:`_upsert_lexical_edge` /
+       :func:`_upsert_semantic_edge` / :func:`_upsert_group_edge` /
+       :func:`_upsert_opposite_edge` helper (preserving position
+       of existing same-kind edges). Each touched unit is written
        ONCE at the end with all edges merged, so the on-disk
        file is consistent on every successful call.
-    6. Refreshes ``unit["updated"]`` to today's ISO date and
+    7. For each pair in the symmetry-sync set, the OTHER side's
+       ``properties.antonyms`` array is upserted via
+       :func:`_sync_antonyms_array`. If the sync mutates a unit
+       that wasn't already in the merged edge map (rare: the
+       declared-on-the-other-side side), the unit is rewritten
+       so the on-disk file reflects the symmetric declaration.
+    8. Refreshes ``unit["updated"]`` to today's ISO date and
        writes the unit back via
        :func:`api.services.unit_writer.write_unit`.
-    7. Returns a summary dict describing what happened.
+    9. Returns a summary dict describing what happened.
 
     Idempotency
     -----------
@@ -861,6 +1224,10 @@ def compute_connections(
         * ``sentences_touched`` (:class:`int`) — number of
           sentence units whose file was rewritten (excludes
           sentences with no outgoing edges of any kind).
+        * ``words_touched`` (:class:`int`) — number of word
+          units whose file was rewritten (excludes words with
+          no outgoing ``opposite`` edges AND no antonym-array
+          sync to perform).
         * ``lexical_pairs`` (:class:`int`) — number of unordered
           sentence pairs that share at least one hanzi token.
         * ``semantic_pairs`` (:class:`int`) — number of unordered
@@ -869,6 +1236,9 @@ def compute_connections(
         * ``group_pairs`` (:class:`int`) — number of unordered
           sentence pairs that share membership in at least one
           group (T17 / AC14).
+        * ``opposite_pairs`` (:class:`int`) — number of unordered
+          word pairs that are declared antonyms by at least one
+          side (T18 / AC15).
         * ``skipped`` (:class:`int`) — number of sentences
           skipped by the combined passes (missing ``id`` or
           no usable ``properties.hanzi`` / ``properties.meaning``).
@@ -879,6 +1249,9 @@ def compute_connections(
           ``semantic_pairs`` mirroring the lexical alias.
         * ``group_pairs_written`` (:class:`int`) — alias for
           ``group_pairs`` mirroring the lexical/semantic aliases.
+        * ``opposite_pairs_written`` (:class:`int`) — alias for
+          ``opposite_pairs`` mirroring the other pair-count
+          aliases.
 
     Raises
     ------
@@ -933,6 +1306,18 @@ def compute_connections(
         _compute_sentence_group_edges(sentences, groups)
     )
 
+    # T18 / AC15 — opposite pass. Loads word units from disk and
+    # pairs up words whose ``properties.antonyms`` arrays declare
+    # each other (in either direction). Returns the edge map plus
+    # a symmetry-sync set used to mirror the declared relation in
+    # the OTHER word's ``antonyms`` array. See
+    # :func:`_compute_word_opposite_edges` for the full contract,
+    # including the "skip unknown targets" decision.
+    words = list_units_by_type(vault_root, "word")
+    opposite_edges, opposite_pairs, symmetry_pairs = (
+        _compute_word_opposite_edges(words)
+    )
+
     # A sentence may contribute to ``skipped`` for lexical reasons
     # (no hanzi) but still participate in semantic edges (has a
     # meaning), or vice versa, or via a group edge (T17). The
@@ -944,18 +1329,27 @@ def compute_connections(
     # over-count units that are partial on one axis but valid
     # on another.
     sentences_touched = 0
-    # Index the in-memory list by id so we can mutate the actual
-    # dict read from disk (list_units_by_type returns the parsed
+    # Index the in-memory lists by id so we can mutate the actual
+    # dicts read from disk (list_units_by_type returns the parsed
     # JSON objects). We must NOT re-read from disk here, otherwise
     # a partial-failure mid-loop would leave the in-memory state
-    # and the on-disk state out of sync.
+    # and the on-disk state out of sync. T18 extends this index
+    # to cover WORDS as well as sentences so the unified I/O loop
+    # below can dispatch on (unit_type, kind). Ids are unique
+    # across types in practice (sentences are ISO dates, words
+    # are tone-marked pinyin, groups are slugs), so a single
+    # dict is safe.
     by_id: dict[str, dict[str, Any]] = {}
     for unit in sentences:
         unit_id = unit.get("id")
         if isinstance(unit_id, str) and unit_id:
             by_id[unit_id] = unit
+    for unit in words:
+        unit_id = unit.get("id")
+        if isinstance(unit_id, str) and unit_id:
+            by_id[unit_id] = unit
 
-    # Union the three edge maps. Each helper tags every edge with
+    # Union the four edge maps. Each helper tags every edge with
     # its kind so the I/O loop can dispatch to the right upsert
     # helper. Order is deterministic because all pure helpers
     # enumerate pairs in id-sorted order.
@@ -972,7 +1366,36 @@ def compute_connections(
         merged.setdefault(source_id, []).extend(
             (other_id, score, _GROUP_KIND) for other_id, score in edges
         )
+    for source_id, edges in opposite_edges.items():
+        merged.setdefault(source_id, []).extend(
+            (other_id, score, _OPPOSITE_KIND) for other_id, score in edges
+        )
 
+    # T18 / AC15 — symmetry sync. For each (a, b) pair in the
+    # symmetry-sync set, append the missing side to the OTHER
+    # word's ``properties.antonyms`` array. We do this AFTER the
+    # edge map is built (so we know which units to mutate) but
+    # BEFORE the write loop (so the sync happens against the
+    # same in-memory dicts we will write out). If a sync
+    # mutates a unit that wasn't already in the merged edge map,
+    # we add it to ``merged`` so the I/O loop will rewrite the
+    # file — the on-disk file must reflect the symmetric
+    # declaration.
+    for a_id, b_id in symmetry_pairs:
+        a_unit = by_id.get(a_id)
+        b_unit = by_id.get(b_id)
+        if a_unit is None or b_unit is None:
+            # Defensive: the algorithm layer only adds pairs to
+            # symmetry_pairs when both ids are known word ids,
+            # so this branch is unreachable unless the in-memory
+            # by_id index lost an entry.
+            continue
+        if _sync_antonyms_array(a_unit, b_id):
+            merged.setdefault(a_id, [])
+        if _sync_antonyms_array(b_unit, a_id):
+            merged.setdefault(b_id, [])
+
+    words_touched = 0
     for source_id, edges in merged.items():
         unit = by_id.get(source_id)
         if unit is None:
@@ -988,11 +1411,21 @@ def compute_connections(
                 _upsert_semantic_edge(unit, other_id, score)
             elif kind == _GROUP_KIND:
                 _upsert_group_edge(unit, other_id, score)
+            elif kind == _OPPOSITE_KIND:
+                _upsert_opposite_edge(unit, other_id, score)
             # No other kind at this point; an unexpected kind
             # would be a programming bug, not user input.
         unit["updated"] = _today_iso()
         write_unit(vault_root, unit)
-        sentences_touched += 1
+        # Count touched units by their type. ``sentences_touched``
+        # keeps its original T15 contract (only sentence units)
+        # so existing AC12/AC13/AC14 tests stay green; T18 adds
+        # the parallel ``words_touched`` counter for AC15.
+        unit_type = unit.get("type")
+        if unit_type == "word":
+            words_touched += 1
+        else:
+            sentences_touched += 1
 
     # ``skipped`` = units with a valid string id that ended up
     # contributing no outgoing edge to ANY pass. Units without a
@@ -1005,12 +1438,15 @@ def compute_connections(
 
     return {
         "sentences_touched": sentences_touched,
+        "words_touched": words_touched,
         "lexical_pairs": lexical_pairs,
         "semantic_pairs": semantic_pairs,
         "group_pairs": group_pairs,
+        "opposite_pairs": opposite_pairs,
         "sentence_lexical_pairs_written": lexical_pairs,
         "semantic_pairs_written": semantic_pairs,
         "group_pairs_written": group_pairs,
+        "opposite_pairs_written": opposite_pairs,
         "skipped": skipped,
     }
 

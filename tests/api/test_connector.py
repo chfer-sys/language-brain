@@ -32,6 +32,7 @@ from api.services.connector import (
     _compute_sentence_lexical_edges,
     _compute_sentence_semantic_edges,
     _compute_sentence_group_edges,
+    _compute_word_opposite_edges,
     compute_connections,
 )
 from api.services.embedder import HashingEmbedder
@@ -1665,4 +1666,681 @@ def test_compute_sentence_group_edges_handles_missing_members_field() -> None:
     # silently ignored — no exception.
     assert pairs == 0
     assert skipped == 0
+    assert edges == {}
+
+
+# ---------------------------------------------------------------------------
+# AC15 — opposite edges (T18)
+# ---------------------------------------------------------------------------
+#
+# These tests cover the ``opposite`` connection kind: symmetric edges
+# between word units whose ``properties.antonyms`` arrays reference each
+# other (in either direction). They mirror the AC12 / AC13 / AC14 tests
+# in structure but use word units and a declared-relation source
+# (``antonyms``) rather than a pairwise similarity.
+#
+# Conventions:
+# * Each unordered word pair declared as antonyms by at least one side
+#   yields exactly ONE ``opposite`` edge on each side, with score 1.0.
+# * The OTHER side's ``properties.antonyms`` array is synced so the
+#   declared relation is symmetric in both the connection graph and
+#   the user-visible field.
+# * Unknown target ids are SKIPPED (no edge written, no sync attempted).
+# * Self-loops are excluded.
+# * A word with no ``antonyms`` array or an empty array contributes
+#   nothing.
+#
+# The ``_make_word`` helper below produces a word unit dict matching
+# the shape returned by :func:`api.services.word_registry.ensure_word_unit`
+# so the connector sees the same on-disk shape it would see in
+# production.
+
+
+def _make_word(
+    word_id: str,
+    hanzi: str,
+    pinyin: str,
+    antonyms: list[str] | None = None,
+) -> dict:
+    """Build a minimal word-unit dict for fixture purposes.
+
+    Mirrors the shape produced by
+    :func:`api.services.word_registry.ensure_word_unit` so the
+    connector sees the same on-disk shape it would see in
+    production. ``english`` and ``meaning`` default to empty
+    strings (the registry's default behavior). ``antonyms`` is
+    copied so the caller can mutate the original list without
+    affecting the fixture. ``created`` / ``updated`` are pinned
+    so tests can detect the ``updated`` refresh without depending
+    on the wall clock.
+    """
+    properties: dict[str, Any] = {
+        "hanzi": hanzi,
+        "pinyin": pinyin,
+        "english": "",
+        "meaning": "",
+        "groups": [],
+        "antonyms": list(antonyms) if antonyms is not None else [],
+    }
+    return {
+        "id": word_id,
+        "type": "word",
+        "name": hanzi,
+        "properties": properties,
+        "connections": [],
+        "created": "2026-06-24",
+        "updated": "2026-06-24",
+        "author_confirmed": True,
+    }
+
+
+def _seed_words(vault_root: str, words: list[dict]) -> None:
+    """Write a list of word units to the vault.
+
+    Goes through :func:`write_unit` so the fixtures mirror how
+    production code populates the vault. Order of writes does not
+    matter for the connector — the algorithm layer reads the
+    word list independently.
+    """
+    for unit in words:
+        write_unit(vault_root, unit)
+
+
+def _seed_words_and_sentences(
+    vault_root: str,
+    words: list[dict],
+    sentences: list[dict] | None = None,
+) -> None:
+    """Write a list of word units AND optionally a list of sentence
+    units to the vault.
+
+    Used by tests that need to confirm the sentence-level and
+    word-level passes coexist (e.g. AC15 does not affect
+    lexical/semantic/group counts). All units go through
+    :func:`write_unit` so the fixtures mirror how production code
+    populates the vault.
+    """
+    if sentences:
+        for unit in sentences:
+            _write_sentence(vault_root, unit)
+    for unit in words:
+        write_unit(vault_root, unit)
+
+
+def _opposite_edges(unit: dict) -> list[dict]:
+    """Return only the ``opposite`` edges of a unit, in list order."""
+    return [
+        edge
+        for edge in unit.get("connections", [])
+        if isinstance(edge, dict) and edge.get("kind") == "opposite"
+    ]
+
+
+def test_opposite_edge_written_for_antonym_pair(tmp_path: Path) -> None:
+    """Two words, chi and è, each declare the OTHER as their
+    antonym. After ``compute_connections``, each word has an
+    ``opposite`` edge pointing to the other with score 1.0, and
+    ``opposite_pairs`` in the summary is 1.
+
+    AC15 happy path: declared relation on BOTH sides ⇒ one edge
+    each direction, score fixed at 1.0.
+    """
+    vault_root = str(tmp_path)
+    _seed_words(
+        vault_root,
+        [
+            _make_word(
+                word_id="chī", hanzi="吃", pinyin="chī", antonyms=["è"]
+            ),
+            _make_word(word_id="è", hanzi="饿", pinyin="è", antonyms=["chī"]),
+        ],
+    )
+
+    summary = compute_connections(vault_root, embedder=_emb())
+
+    assert summary["opposite_pairs"] == 1
+    assert summary["opposite_pairs_written"] == 1
+    assert summary["words_touched"] == 2
+    # No sentences in this vault, so the sentence counters are zero.
+    assert summary["sentences_touched"] == 0
+
+    chi = read_unit(vault_root, "word", "chī")
+    e = read_unit(vault_root, "word", "è")
+
+    opp_chi = _opposite_edges(chi)
+    opp_e = _opposite_edges(e)
+
+    assert len(opp_chi) == 1
+    assert len(opp_e) == 1
+    assert opp_chi[0]["to"] == "è"
+    assert opp_e[0]["to"] == "chī"
+    assert opp_chi[0]["kind"] == "opposite"
+    assert opp_e[0]["kind"] == "opposite"
+    assert opp_chi[0]["score"] == pytest.approx(1.0)
+    assert opp_e[0]["score"] == pytest.approx(1.0)
+
+
+def test_opposite_edge_symmetric_when_only_one_side_declares(
+    tmp_path: Path,
+) -> None:
+    """chi declares è as its antonym; è declares nothing. After
+    ``compute_connections``:
+
+    * chi has an ``opposite`` edge to è (score 1.0)
+    * è has an ``opposite`` edge to chi (score 1.0)
+    * è's ``properties.antonyms`` now contains ``"chī"`` (the
+      AC15 "writes symmetrically" half)
+    * chi's ``properties.antonyms`` still contains ``"è"``
+
+    This is the AC15 symmetry test. The connector is responsible
+    for materializing the symmetry in BOTH the connection graph
+    AND the user-visible ``antonyms`` array.
+    """
+    vault_root = str(tmp_path)
+    _seed_words(
+        vault_root,
+        [
+            _make_word(
+                word_id="chī", hanzi="吃", pinyin="chī", antonyms=["è"]
+            ),
+            _make_word(
+                word_id="è", hanzi="饿", pinyin="è", antonyms=[]
+            ),
+        ],
+    )
+
+    summary = compute_connections(vault_root, embedder=_emb())
+
+    assert summary["opposite_pairs"] == 1
+    # Both words are touched: chi via its edge, è via both the
+    # edge AND the antonym-array sync.
+    assert summary["words_touched"] == 2
+
+    chi = read_unit(vault_root, "word", "chī")
+    e = read_unit(vault_root, "word", "è")
+
+    # Edges.
+    opp_chi = _opposite_edges(chi)
+    opp_e = _opposite_edges(e)
+    assert len(opp_chi) == 1 and opp_chi[0]["to"] == "è"
+    assert len(opp_e) == 1 and opp_e[0]["to"] == "chī"
+    assert opp_chi[0]["score"] == pytest.approx(1.0)
+    assert opp_e[0]["score"] == pytest.approx(1.0)
+
+    # Symmetry of antonym arrays.
+    chi_ant = chi["properties"]["antonyms"]
+    e_ant = e["properties"]["antonyms"]
+    assert "è" in chi_ant  # preserved
+    assert "chī" in e_ant  # mirrored
+    # And the order of the original chi declaration is preserved
+    # (sync only APPENDS — it does not reorder existing entries).
+    assert chi_ant == ["è"]
+    # è's array was empty; after sync it has exactly one entry.
+    assert e_ant == ["chī"]
+
+
+def test_opposite_edge_idempotent(tmp_path: Path) -> None:
+    """Calling ``compute_connections`` twice does not duplicate
+    either the ``opposite`` edge or the mirrored ``antonyms``
+    entry on the OTHER side.
+
+    AC15 + SPEC §4 R7 idempotency. After two runs:
+    * Each word has exactly ONE ``opposite`` edge pointing to
+      the other.
+    * Each word's ``properties.antonyms`` array contains the
+      other id exactly once (not twice).
+    * ``opposite_pairs`` is 1 both times (it counts unordered
+      pairs, not edge objects).
+    """
+    vault_root = str(tmp_path)
+    _seed_words(
+        vault_root,
+        [
+            _make_word(
+                word_id="chī", hanzi="吃", pinyin="chī", antonyms=["è"]
+            ),
+            _make_word(word_id="è", hanzi="饿", pinyin="è", antonyms=[]),
+        ],
+    )
+
+    first = compute_connections(vault_root, embedder=_emb())
+    second = compute_connections(vault_root, embedder=_emb())
+
+    assert first["opposite_pairs"] == 1
+    assert second["opposite_pairs"] == 1
+
+    chi = read_unit(vault_root, "word", "chī")
+    e = read_unit(vault_root, "word", "è")
+
+    # Exactly one opposite edge per direction.
+    assert len(_opposite_edges(chi)) == 1
+    assert len(_opposite_edges(e)) == 1
+
+    # And the on-disk JSON has only one edge per direction.
+    chi_path = Path(vault_root) / "units" / "words" / "chī.json"
+    with chi_path.open(encoding="utf-8") as fh:
+        raw = json.load(fh)
+    assert len(_edges_of_kind(raw, "opposite")) == 1
+
+    # The mirrored antonym appears EXACTLY ONCE — the second
+    # run's sync detected that the entry was already present
+    # and appended nothing.
+    assert e["properties"]["antonyms"] == ["chī"]
+    assert chi["properties"]["antonyms"] == ["è"]
+
+
+def test_opposite_no_edge_without_antonym_reference(tmp_path: Path) -> None:
+    """Two words with empty ``antonyms`` arrays produce zero
+    ``opposite`` edges and a zero ``opposite_pairs`` count.
+
+    AC15: "A word with no ``antonyms`` array or an empty array
+    contributes no edges." An empty declaration on BOTH sides is
+    the empty-graph case; the function must not invent edges.
+    """
+    vault_root = str(tmp_path)
+    _seed_words(
+        vault_root,
+        [
+            _make_word(word_id="chī", hanzi="吃", pinyin="chī", antonyms=[]),
+            _make_word(word_id="è", hanzi="饿", pinyin="è", antonyms=[]),
+        ],
+    )
+
+    summary = compute_connections(vault_root, embedder=_emb())
+
+    assert summary["opposite_pairs"] == 0
+    assert summary["opposite_pairs_written"] == 0
+    # Neither word contributed an edge AND neither required an
+    # antonym-array sync (empty arrays, nothing to mirror).
+    # The words exist on disk but contributed no edge, so they
+    # are NOT counted as ``sentences_touched`` (that counter is
+    # sentence-only). The ``words_touched`` counter is also
+    # zero because the I/O loop only writes units that had at
+    # least one entry in the merged edge map (or were added via
+    # symmetry sync, which didn't fire here).
+    assert summary["words_touched"] == 0
+
+    chi = read_unit(vault_root, "word", "chī")
+    e = read_unit(vault_root, "word", "è")
+    assert _opposite_edges(chi) == []
+    assert _opposite_edges(e) == []
+    assert chi["properties"]["antonyms"] == []
+    assert e["properties"]["antonyms"] == []
+
+
+def test_opposite_score_is_one(tmp_path: Path) -> None:
+    """The stored score on every ``opposite`` edge is exactly 1.0.
+
+    AC15 / SPEC §2.4: "score = 1.0" — a literal, not a generic
+    positive value. We assert equality with the exact float
+    ``1.0`` (via ``pytest.approx`` for float-typed comparison
+    safety) rather than just ``> 0`` so a future regression to
+    "0.5" or "some similarity-derived value" is caught.
+    """
+    vault_root = str(tmp_path)
+    _seed_words(
+        vault_root,
+        [
+            _make_word(
+                word_id="chī", hanzi="吃", pinyin="chī", antonyms=["è"]
+            ),
+            _make_word(
+                word_id="è", hanzi="饿", pinyin="è", antonyms=["chī"]
+            ),
+        ],
+    )
+
+    compute_connections(vault_root, embedder=_emb())
+
+    chi = read_unit(vault_root, "word", "chī")
+    opp = _opposite_edges(chi)
+    assert len(opp) == 1
+    assert opp[0]["score"] == pytest.approx(1.0)
+    # Belt and suspenders: not just > 0 — exactly 1.0.
+    assert opp[0]["score"] == 1.0
+
+
+def test_opposite_skips_self_loop(tmp_path: Path) -> None:
+    """A word whose ``antonyms`` array contains its own id does
+    NOT get an ``opposite`` edge pointing to itself.
+
+    AC15 forbids self-loops. We construct a contrived word whose
+    id is ``"w"`` and whose ``antonyms`` array contains
+    ``["w"]``. The pass must drop the (w, w) pair — which it
+    does via the self-loop guard in
+    :func:`_compute_word_opposite_edges`. After
+    ``compute_connections``, the word has no ``opposite`` edges
+    at all, and ``opposite_pairs`` is 0.
+    """
+    vault_root = str(tmp_path)
+    _seed_words(
+        vault_root,
+        [
+            _make_word(word_id="w", hanzi="我", pinyin="w", antonyms=["w"]),
+        ],
+    )
+
+    summary = compute_connections(vault_root, embedder=_emb())
+
+    assert summary["opposite_pairs"] == 0
+    assert summary["opposite_pairs_written"] == 0
+
+    w = read_unit(vault_root, "word", "w")
+    assert _opposite_edges(w) == []
+    # The self-reference in ``antonyms`` is preserved verbatim —
+    # pruning the array is a write-side concern that requires
+    # an explicit "remove" operation, not the upsert contract
+    # this pass implements.
+    assert w["properties"]["antonyms"] == ["w"]
+
+
+def test_opposite_unknown_target_does_not_crash(tmp_path: Path) -> None:
+    """A word whose ``antonyms`` array references a target that
+    does NOT exist as a word unit on disk contributes NO edge
+    and does NOT crash the connector.
+
+    Locked-in design decision (see
+    :func:`_compute_word_opposite_edges` docstring and the
+    "Edges to unknown targets" note in the connector module
+    docstring): unknown target ids are SKIPPED. We do not write
+    a dangling edge to a non-existent target, and we do not
+    attempt to sync the OTHER side's ``antonyms`` array because
+    there is no OTHER side on disk. The rationale is that the
+    connection graph should not carry references that cannot
+    be resolved by the search route.
+
+    This test asserts the chosen behavior: no edge written,
+    no crash, and no modification to the declared word's
+    ``antonyms`` array (the connector never mutates the
+    DECLARING side's array — it only mirrors onto the OTHER
+    side, which doesn't exist here).
+    """
+    vault_root = str(tmp_path)
+    _seed_words(
+        vault_root,
+        [
+            _make_word(
+                word_id="chī",
+                hanzi="吃",
+                pinyin="chī",
+                antonyms=["nonexistent"],
+            ),
+        ],
+    )
+
+    # Must not raise.
+    summary = compute_connections(vault_root, embedder=_emb())
+
+    assert summary["opposite_pairs"] == 0
+    assert summary["opposite_pairs_written"] == 0
+    # The declaring word has no outgoing edge (the only declared
+    # target was unknown and was skipped), so it is NOT in the
+    # merged edge map and is NOT written back. ``words_touched``
+    # is therefore 0 in this scenario.
+    assert summary["words_touched"] == 0
+
+    chi = read_unit(vault_root, "word", "chī")
+    assert _opposite_edges(chi) == []
+    # The original declaration is preserved verbatim — the
+    # connector only mutates OTHER sides, not the declaring side.
+    assert chi["properties"]["antonyms"] == ["nonexistent"]
+
+
+def test_opposite_does_not_affect_other_kinds(tmp_path: Path) -> None:
+    """Three words forming an antonym chain (chi↔è, è↔lěng,
+    lěng↔rè) get exactly the expected ``opposite`` edges and
+    NO lexical/semantic/group edges (those are sentence-level
+    and not exercised in a words-only vault).
+
+    The summary's sentence counters (``sentences_touched``,
+    ``lexical_pairs``, ``semantic_pairs``, ``group_pairs``) are
+    all zero in this vault-of-words-only scenario — the AC15
+    pass is fully independent of the sentence passes.
+    """
+    vault_root = str(tmp_path)
+    _seed_words(
+        vault_root,
+        [
+            _make_word(
+                word_id="chī", hanzi="吃", pinyin="chī", antonyms=["è"]
+            ),
+            _make_word(
+                word_id="è", hanzi="饿", pinyin="è", antonyms=["chī", "lěng"]
+            ),
+            _make_word(
+                word_id="lěng",
+                hanzi="冷",
+                pinyin="lěng",
+                antonyms=["è", "rè"],
+            ),
+            _make_word(
+                word_id="rè", hanzi="热", pinyin="rè", antonyms=["lěng"]
+            ),
+        ],
+    )
+
+    summary = compute_connections(vault_root, embedder=_emb())
+
+    # Three unordered pairs: (chī, è), (è, lěng), (lěng, rè).
+    assert summary["opposite_pairs"] == 3
+    assert summary["opposite_pairs_written"] == 3
+
+    # No sentences were involved in this vault — every
+    # sentence-level counter is zero, and the word-level pass
+    # did not touch them.
+    assert summary["sentences_touched"] == 0
+    assert summary["lexical_pairs"] == 0
+    assert summary["semantic_pairs"] == 0
+    assert summary["group_pairs"] == 0
+
+    # All four words should be touched (each has at least one
+    # outgoing opposite edge).
+    assert summary["words_touched"] == 4
+
+    chi = read_unit(vault_root, "word", "chī")
+    e = read_unit(vault_root, "word", "è")
+    leng = read_unit(vault_root, "word", "lěng")
+    re_ = read_unit(vault_root, "word", "rè")
+
+    # Verify the per-word edge sets.
+    chi_targets = sorted(e["to"] for e in _opposite_edges(chi))
+    e_targets = sorted(e["to"] for e in _opposite_edges(e))
+    leng_targets = sorted(e["to"] for e in _opposite_edges(leng))
+    re_targets = sorted(e["to"] for e in _opposite_edges(re_))
+
+    assert chi_targets == ["è"]
+    assert e_targets == ["chī", "lěng"]
+    assert leng_targets == sorted(["è", "rè"])
+    assert re_targets == ["lěng"]
+
+    # And the mirrored antonym arrays are now symmetric on every
+    # side: every declared partner appears in both directions'
+    # ``antonyms`` list.
+    assert set(chi["properties"]["antonyms"]) == {"è"}
+    assert set(e["properties"]["antonyms"]) == {"chī", "lěng"}
+    assert set(leng["properties"]["antonyms"]) == {"è", "rè"}
+    assert set(re_["properties"]["antonyms"]) == {"lěng"}
+
+
+def test_opposite_pairs_summary(tmp_path: Path) -> None:
+    """``summary["opposite_pairs"]`` reflects the actual unordered
+    pair count, regardless of how many sides declared the
+    relation.
+
+    We use three unordered pairs (declared via a single side
+    each, to also exercise the symmetry-sync path on every
+    pair). ``opposite_pairs`` is 3 — counting PAIRS, not edges
+    or declarations. ``opposite_pairs_written`` is the alias
+    and must equal ``opposite_pairs`` exactly.
+    """
+    vault_root = str(tmp_path)
+    _seed_words(
+        vault_root,
+        [
+            # chi declares è.
+            _make_word(
+                word_id="chī", hanzi="吃", pinyin="chī", antonyms=["è"]
+            ),
+            # lěng declares rè.
+            _make_word(
+                word_id="lěng",
+                hanzi="冷",
+                pinyin="lěng",
+                antonyms=["rè"],
+            ),
+            # gāo declares dī.
+            _make_word(
+                word_id="gāo",
+                hanzi="高",
+                pinyin="gāo",
+                antonyms=["dī"],
+            ),
+            # The OTHER sides start empty; the connector syncs.
+            _make_word(word_id="è", hanzi="饿", pinyin="è", antonyms=[]),
+            _make_word(word_id="rè", hanzi="热", pinyin="rè", antonyms=[]),
+            _make_word(word_id="dī", hanzi="低", pinyin="dī", antonyms=[]),
+        ],
+    )
+
+    summary = compute_connections(vault_root, embedder=_emb())
+
+    assert summary["opposite_pairs"] == 3
+    assert summary["opposite_pairs_written"] == 3
+    assert summary["opposite_pairs"] == summary["opposite_pairs_written"]
+    # Every word is touched: declaring sides via their edges,
+    # OTHER sides via BOTH the edge and the antonym-array sync.
+    assert summary["words_touched"] == 6
+
+
+# ---------------------------------------------------------------------------
+# Pure-algorithm tests for the opposite pass (T18)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_word_opposite_edges_pure_no_io() -> None:
+    """The pure opposite helper accepts an in-memory word list
+    and returns edges + symmetry-sync set without touching the
+    vault.
+
+    Two words declare each other. Expected: one unordered pair,
+    one edge each direction, score 1.0, and NO entry in the
+    symmetry-sync set (because BOTH sides already declare the
+    relation — there is nothing to mirror).
+    """
+    words = [
+        _make_word(
+            word_id="chī", hanzi="吃", pinyin="chī", antonyms=["è"]
+        ),
+        _make_word(
+            word_id="è", hanzi="饿", pinyin="è", antonyms=["chī"]
+        ),
+    ]
+
+    edges, pairs, sync = _compute_word_opposite_edges(words)
+
+    assert pairs == 1
+    # No sync needed: both sides already declare.
+    assert sync == set()
+    assert edges["chī"] == [("è", pytest.approx(1.0))]
+    assert edges["è"] == [("chī", pytest.approx(1.0))]
+
+
+def test_compute_word_opposite_edges_one_sided_pair_adds_to_sync() -> None:
+    """When only ONE side declares the relation, the pair is in
+    the symmetry-sync set so the I/O layer can mirror it onto
+    the OTHER side.
+
+    The edge map is identical to the both-sided case (one edge
+    each direction). The sync set, however, contains the
+    pair so the I/O layer will append the missing side to the
+    OTHER word's ``antonyms`` array.
+    """
+    words = [
+        _make_word(
+            word_id="chī", hanzi="吃", pinyin="chī", antonyms=["è"]
+        ),
+        _make_word(word_id="è", hanzi="饿", pinyin="è", antonyms=[]),
+    ]
+
+    edges, pairs, sync = _compute_word_opposite_edges(words)
+
+    assert pairs == 1
+    assert edges["chī"] == [("è", pytest.approx(1.0))]
+    assert edges["è"] == [("chī", pytest.approx(1.0))]
+    # Sync set contains the unordered pair (sorted ids).
+    assert sync == {("chī", "è")}
+
+
+def test_compute_word_opposite_edges_skips_unknown_targets() -> None:
+    """An antonym id that points at a missing word file is
+    skipped entirely: no edge written, no sync attempted.
+
+    This locks in the design decision documented at the top of
+    the function: unknown target ids do not produce dangling
+    references in the connection graph.
+    """
+    words = [
+        _make_word(
+            word_id="chī",
+            hanzi="吃",
+            pinyin="chī",
+            antonyms=["nonexistent"],
+        ),
+    ]
+
+    edges, pairs, sync = _compute_word_opposite_edges(words)
+
+    assert pairs == 0
+    assert sync == set()
+    assert edges == {}
+
+
+def test_compute_word_opposite_edges_skips_self_loops() -> None:
+    """A word whose ``antonyms`` list contains its own id does
+    NOT get a self-loop edge.
+
+    The pure helper drops the (a, a) pair via the explicit
+    self-loop guard.
+    """
+    words = [
+        _make_word(word_id="w", hanzi="我", pinyin="w", antonyms=["w"]),
+    ]
+
+    edges, pairs, sync = _compute_word_opposite_edges(words)
+
+    assert pairs == 0
+    assert sync == set()
+    assert edges == {}
+
+
+def test_compute_word_opposite_edges_empty_antonyms_contributes_nothing() -> (
+    None
+):
+    """A word with no ``antonyms`` array or an empty array
+    contributes no edges and is not in the symmetry-sync set.
+
+    The pure helper must tolerate missing or empty fields
+    without raising.
+    """
+    # Word with explicit empty list.
+    word_empty = _make_word(
+        word_id="w1", hanzi="我", pinyin="w1", antonyms=[]
+    )
+    # Word with missing ``antonyms`` key entirely.
+    word_missing = _make_word(
+        word_id="w2", hanzi="你", pinyin="w2", antonyms=[]
+    )
+    del word_missing["properties"]["antonyms"]
+    # Word with malformed ``antonyms`` (not a list).
+    word_bad = _make_word(
+        word_id="w3", hanzi="他", pinyin="w3", antonyms=[]
+    )
+    word_bad["properties"]["antonyms"] = "not a list"
+
+    edges, pairs, sync = _compute_word_opposite_edges(
+        [word_empty, word_missing, word_bad]
+    )
+
+    assert pairs == 0
+    assert sync == set()
     assert edges == {}
