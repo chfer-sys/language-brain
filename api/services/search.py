@@ -718,21 +718,35 @@ _ASCII_LETTER_RUN: re.Pattern[str] = re.compile(r"[A-Za-z]{3,}")
 
 
 def has_natural_language_english(s: str) -> bool:
-    """Return ``True`` if ``s`` contains any ASCII a-z run of length
-    ``>= 3``.
+    """Return ``True`` if ``s`` contains a natural-language English
+    word of length 3+ (per SPEC §6 AC21).
 
-    Per SPEC §6 AC21, search results must not leak natural-language
-    English in ``name`` or ``snippet``. Pinyin contains accented
-    vowels (ā á ǎ à etc.), not ASCII a-z runs of 3+, so a simple
-    ASCII regex check is sufficient for the AC.
+    A "natural-language English word" here is a contiguous ASCII
+    letter run of length >= 3 whose immediate neighbors (if any)
+    are NOT hyphens or digits. The hyphen exclusion is critical
+    for slug identifiers like ``basic-verbs`` (the runs "basic"
+    and "verbs" are *parts of an identifier*, not English words).
+    The digit exclusion prevents accidental triggers on
+    alphanumeric tokens.
 
-    The function is conservative — a 2-letter ASCII run like
-    ``"le"`` (了 as a romanization fragment) does NOT trigger.
-    Real natural-language English almost always contains at
-    least one 3+ ASCII run per short phrase ("the", "and",
-    "with", "I am eating", …), so the threshold catches the
-    common cases without false positives on short pinyin
-    substrings.
+    Examples
+    --------
+    - ``"hello"`` → True.
+    - ``"I am eating"`` → True ("eating" is 7 ASCII, bounded by spaces).
+    - ``"wǒ xǐhuān chī"`` → False (no pure-ASCII runs).
+    - ``"basic-verbs"`` → False (the runs "basic" and "verbs" are
+      bounded by hyphens — they're identifier parts).
+    - ``"daily-life"`` → False.
+    - ``"daily life"`` → True ("daily" and "life" are real words).
+    - ``"abc123"`` → False (the run "abc" is bounded by a digit).
+    - ``"a b c"`` → False (single-letter words don't trigger;
+      threshold is 3+).
+    - ``"the"`` → True (the shortest common English word).
+    - ``"I"`` → False (single character).
+
+    The threshold (3+) avoids false positives on short pinyin
+    substrings like ``"le"`` (了) or ``"ma"`` (吗), which are
+    2 letters and bounded by spaces in normal pinyin strings.
 
     Parameters
     ----------
@@ -744,12 +758,29 @@ def has_natural_language_english(s: str) -> bool:
     Returns
     -------
     bool
-        ``True`` if ``s`` contains an ASCII a-z/A-Z run of
-        length 3 or more.
+        ``True`` if ``s`` contains a 3+ ASCII letter run whose
+        neighbors (if any) are not hyphens or digits. This is
+        the strict reading of "natural-language English" used
+        by AC21.
     """
     if not isinstance(s, str):
         return False
-    return _ASCII_LETTER_RUN.search(s) is not None
+    for m in re.finditer(r"[A-Za-z]{3,}", s):
+        # Inspect the character immediately before and after the match.
+        # If either neighbor exists and is a hyphen or digit, the
+        # match is part of an identifier like "basic-verbs" or
+        # "abc123" and should not count.
+        start, end = m.start(), m.end()
+        before = s[start - 1] if start > 0 else None
+        after = s[end] if end < len(s) else None
+        if before in ("-",) or after in ("-",):
+            continue
+        if before is not None and before.isdigit():
+            continue
+        if after is not None and after.isdigit():
+            continue
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
