@@ -1,11 +1,12 @@
 """Tests for :mod:`api.services.connector`.
 
 Covers SPEC §6 AC12 (lexical sentence ↔ sentence connection kind,
-T15) and AC13 (semantic sentence ↔ sentence connection kind, T16).
-The connector's design is purely additive: future T17/T18 work
-will add ``group`` and ``opposite`` kinds to the same
-:func:`compute_connections` entry point. These tests focus on
-the lexical and semantic kinds for now.
+T15), AC13 (semantic sentence ↔ sentence connection kind, T16),
+and AC14 (group sentence ↔ sentence connection kind, T17). The
+connector's design is purely additive: future T18 work will add
+the ``opposite`` kind to the same :func:`compute_connections`
+entry point. These tests focus on the lexical, semantic, and
+group kinds.
 
 All tests use ``tmp_path`` for vault isolation; no test mutates the
 real vault. Units are written through
@@ -30,6 +31,7 @@ import pytest
 from api.services.connector import (
     _compute_sentence_lexical_edges,
     _compute_sentence_semantic_edges,
+    _compute_sentence_group_edges,
     compute_connections,
 )
 from api.services.embedder import HashingEmbedder
@@ -108,10 +110,68 @@ def _edges_of_kind(unit: dict, kind: str) -> list[dict]:
     ]
 
 
+def _group_edges(unit: dict) -> list[dict]:
+    """Return only the ``group`` edges of a unit, in list order."""
+    return [
+        edge
+        for edge in unit.get("connections", [])
+        if isinstance(edge, dict) and edge.get("kind") == "group"
+    ]
+
+
 def _seed_vault(vault_root: str, sentences: list[dict]) -> None:
     """Write a list of sentence units to the vault."""
     for unit in sentences:
         _write_sentence(vault_root, unit)
+
+
+def _make_group(
+    group_id: str,
+    member_ids: list[str],
+) -> dict:
+    """Build a minimal group-unit dict for fixture purposes.
+
+    Mirrors the shape produced by
+    :func:`api.services.group_registry.ensure_group_unit` so the
+    connector sees the same on-disk shape it would see in
+    production. ``display_name`` and ``description`` default to
+    the empty string (the registry's default behavior). ``members``
+    is copied so the caller can mutate the original list without
+    affecting the fixture.
+    """
+    return {
+        "id": group_id,
+        "type": "group",
+        "name": group_id,
+        "properties": {
+            "display_name": "",
+            "description": "",
+            "members": list(member_ids),
+        },
+        "connections": [],
+        "created": "2026-06-24",
+        "updated": "2026-06-24",
+        "author_confirmed": True,
+    }
+
+
+def _seed_vault_with_groups(
+    vault_root: str,
+    sentences: list[dict],
+    groups: list[dict],
+) -> None:
+    """Write a list of sentence units AND a list of group units
+    to the vault.
+
+    Both lists are written through :func:`write_unit` so the
+    fixtures mirror how production code populates the vault.
+    Order of writes does not matter for the connector — the
+    algorithm layer reads both lists independently.
+    """
+    for unit in sentences:
+        _write_sentence(vault_root, unit)
+    for group in groups:
+        write_unit(vault_root, group)
 
 
 def _emb() -> HashingEmbedder:
@@ -1068,3 +1128,541 @@ def test_compute_sentence_semantic_edges_respects_threshold() -> None:
     )
     assert pairs_low == 1
     assert edges_low["A"] == [("B", pytest.approx(1.0))]
+
+
+# ---------------------------------------------------------------------------
+# AC14 — group edges (T17)
+# ---------------------------------------------------------------------------
+#
+# These tests cover the ``group`` connection kind: symmetric edges
+# between sentence units that share membership in at least one
+# group. They mirror the AC12 / AC13 tests in structure but use
+# group units as the membership source.
+#
+# Conventions:
+# * Each pair of sentences that share a group yields exactly ONE
+#   ``group`` edge on each side, with score 1.0.
+# * Multiple shared groups between the same pair collapse to a
+#   single edge (deduplicated by ``(to, kind)`` like other kinds).
+# * Sentences with no group membership contribute no edges.
+# * Group units are NEVER targets of ``group`` edges from member
+#   sentences.
+
+
+def test_group_edge_written_for_shared_membership(tmp_path: Path) -> None:
+    """Two sentences both in group ``basic-verbs`` each get a
+    ``group`` edge pointing at the other with score 1.0.
+
+    AC14 happy path: shared membership ⇒ ``group`` edge, both
+    directions, score fixed at 1.0. ``group_pairs`` is 1.
+    """
+    vault_root = str(tmp_path)
+    _seed_vault_with_groups(
+        vault_root,
+        sentences=[
+            _make_sentence(unit_id="S1", hanzi="我喜欢"),
+            _make_sentence(unit_id="S2", hanzi="你走了"),
+        ],
+        groups=[
+            _make_group("basic-verbs", ["S1", "S2"]),
+        ],
+    )
+
+    summary = compute_connections(vault_root, embedder=_emb())
+
+    assert summary["group_pairs"] == 1
+    assert summary["group_pairs_written"] == 1
+
+    s1 = read_unit(vault_root, "sentence", "S1")
+    s2 = read_unit(vault_root, "sentence", "S2")
+
+    g1 = _group_edges(s1)
+    g2 = _group_edges(s2)
+
+    assert len(g1) == 1
+    assert len(g2) == 1
+    assert g1[0]["to"] == "S2"
+    assert g2[0]["to"] == "S1"
+    assert g1[0]["kind"] == "group"
+    assert g2[0]["kind"] == "group"
+    assert g1[0]["score"] == pytest.approx(1.0)
+    assert g2[0]["score"] == pytest.approx(1.0)
+
+
+def test_no_group_edge_without_shared_membership(tmp_path: Path) -> None:
+    """Sentences in DIFFERENT groups (and a sentence with no group
+    membership at all) get zero ``group`` edges.
+
+    AC14: edges are written only when two sentences SHARE a group.
+    Disjoint group membership — or no membership at all — must
+    produce no ``group`` edges. ``group_pairs`` is 0.
+    """
+    vault_root = str(tmp_path)
+    _seed_vault_with_groups(
+        vault_root,
+        sentences=[
+            _make_sentence(unit_id="S1", hanzi="a"),  # in group A
+            _make_sentence(unit_id="S2", hanzi="b"),  # in group B
+            _make_sentence(unit_id="S3", hanzi="c"),  # no group at all
+        ],
+        groups=[
+            _make_group("group-a", ["S1"]),
+            _make_group("group-b", ["S2"]),
+        ],
+    )
+
+    summary = compute_connections(vault_root, embedder=_emb())
+
+    assert summary["group_pairs"] == 0
+    assert summary["group_pairs_written"] == 0
+
+    for unit_id in ("S1", "S2", "S3"):
+        unit = read_unit(vault_root, "sentence", unit_id)
+        assert _group_edges(unit) == []
+
+
+def test_group_edge_symmetric_and_idempotent(tmp_path: Path) -> None:
+    """Two sentences sharing one group, run twice: each side has
+    exactly one ``group`` edge per direction (idempotent upsert).
+
+    AC14 symmetry + idempotency. After TWO runs of
+    ``compute_connections``, neither sentence has duplicate
+    ``group`` edges. The summary's ``group_pairs`` count is 1
+    both times (the count is over pairs, not over edges).
+    """
+    vault_root = str(tmp_path)
+    _seed_vault_with_groups(
+        vault_root,
+        sentences=[
+            _make_sentence(unit_id="S1", hanzi="ab"),
+            _make_sentence(unit_id="S2", hanzi="cd"),
+        ],
+        groups=[
+            _make_group("shared-group", ["S1", "S2"]),
+        ],
+    )
+
+    first = compute_connections(vault_root, embedder=_emb())
+    second = compute_connections(vault_root, embedder=_emb())
+
+    assert first["group_pairs"] == 1
+    assert second["group_pairs"] == 1
+
+    s1 = read_unit(vault_root, "sentence", "S1")
+    s2 = read_unit(vault_root, "sentence", "S2")
+
+    # Exactly one group edge per direction — the second run's
+    # upsert updated the score in place rather than appending.
+    g1 = _group_edges(s1)
+    g2 = _group_edges(s2)
+    assert len(g1) == 1
+    assert len(g2) == 1
+    assert g1[0]["to"] == "S2"
+    assert g2[0]["to"] == "S1"
+    assert g1[0]["score"] == pytest.approx(1.0)
+    assert g2[0]["score"] == pytest.approx(1.0)
+
+    # And the on-disk JSON has only one ``group`` edge per unit.
+    s1_path = Path(vault_root) / "units" / "sentences" / "S1.json"
+    with s1_path.open(encoding="utf-8") as fh:
+        raw = json.load(fh)
+    assert len(_edges_of_kind(raw, "group")) == 1
+
+
+def test_group_edge_multiple_shared_groups(tmp_path: Path) -> None:
+    """Two sentences sharing THREE groups still get exactly ONE
+    ``group`` edge to each other (deduplicated by ``(to, kind)``).
+
+    The ``(to, kind)`` upsert contract guarantees that a second
+    pass through ``_compute_sentence_group_edges`` for the same
+    pair produces no new edge object — the existing one is
+    updated in place. Score remains exactly 1.0 (group edges do
+    not accumulate scores across shared groups; the relation is
+    binary).
+    """
+    vault_root = str(tmp_path)
+    _seed_vault_with_groups(
+        vault_root,
+        sentences=[
+            _make_sentence(unit_id="S1", hanzi="x"),
+            _make_sentence(unit_id="S2", hanzi="y"),
+        ],
+        groups=[
+            _make_group("g1", ["S1", "S2"]),
+            _make_group("g2", ["S1", "S2"]),
+            _make_group("g3", ["S1", "S2"]),
+        ],
+    )
+
+    summary = compute_connections(vault_root, embedder=_emb())
+
+    # Three groups, but the pair (S1, S2) is still ONE unordered
+    # pair — ``group_pairs`` counts pairs, not shared groups.
+    assert summary["group_pairs"] == 1
+
+    s1 = read_unit(vault_root, "sentence", "S1")
+    s2 = read_unit(vault_root, "sentence", "S2")
+
+    g1 = _group_edges(s1)
+    g2 = _group_edges(s2)
+    assert len(g1) == 1
+    assert len(g2) == 1
+    assert g1[0]["to"] == "S2"
+    assert g2[0]["to"] == "S1"
+    assert g1[0]["score"] == pytest.approx(1.0)
+    assert g2[0]["score"] == pytest.approx(1.0)
+
+
+def test_group_edge_skips_sentences_with_no_group_membership(
+    tmp_path: Path,
+) -> None:
+    """A sentence with no group membership contributes no ``group``
+    edges, even when other sentences in the vault DO share a group.
+
+    AC14: "A unit that has no group memberships at all contributes
+    no edges." We seed S1 + S2 in the same group and S3 in no
+    group at all; S3 must end up with an empty ``group``-edges
+    list after ``compute_connections``.
+    """
+    vault_root = str(tmp_path)
+    _seed_vault_with_groups(
+        vault_root,
+        sentences=[
+            _make_sentence(unit_id="S1", hanzi="a"),
+            _make_sentence(unit_id="S2", hanzi="b"),
+            _make_sentence(unit_id="S3", hanzi="c"),  # no membership
+        ],
+        groups=[
+            _make_group("g-only-s1s2", ["S1", "S2"]),
+        ],
+    )
+
+    summary = compute_connections(vault_root, embedder=_emb())
+
+    assert summary["group_pairs"] == 1
+
+    s1 = read_unit(vault_root, "sentence", "S1")
+    s2 = read_unit(vault_root, "sentence", "S2")
+    s3 = read_unit(vault_root, "sentence", "S3")
+
+    # S1 ↔ S2 share a group → each gets a ``group`` edge to the
+    # other.
+    g1 = _group_edges(s1)
+    g2 = _group_edges(s2)
+    assert len(g1) == 1 and g1[0]["to"] == "S2"
+    assert len(g2) == 1 and g2[0]["to"] == "S1"
+
+    # S3 is in no group → it must have ZERO ``group`` edges,
+    # even though it is a sentence unit.
+    assert _group_edges(s3) == []
+
+
+def test_group_edge_score_is_one(tmp_path: Path) -> None:
+    """The stored score on a shared-membership edge is exactly 1.0.
+
+    AC14: "score = 1.0" — a literal, not a generic positive value.
+    This test asserts equality with the exact float ``1.0`` (via
+    ``pytest.approx`` for float-typed comparison safety) rather
+    than just ``> 0`` so a future regression to "0.5" or "some
+    similarity-derived value" is caught.
+    """
+    vault_root = str(tmp_path)
+    _seed_vault_with_groups(
+        vault_root,
+        sentences=[
+            _make_sentence(unit_id="S1", hanzi="aa"),
+            _make_sentence(unit_id="S2", hanzi="bb"),
+        ],
+        groups=[
+            _make_group("g", ["S1", "S2"]),
+        ],
+    )
+
+    compute_connections(vault_root, embedder=_emb())
+
+    s1 = read_unit(vault_root, "sentence", "S1")
+    g1 = _group_edges(s1)
+    assert len(g1) == 1
+    assert g1[0]["score"] == pytest.approx(1.0)
+    # Belt and suspenders: not just > 0 — exactly 1.0.
+    assert g1[0]["score"] == 1.0
+
+
+def test_group_does_not_affect_lexical_or_semantic(tmp_path: Path) -> None:
+    """A shared-group pair that ALSO shares hanzi and meaning gets
+    three DISTINCT edges on each unit: ``lexical``, ``semantic``,
+    ``group``.
+
+    The kinds coexist without stomping on each other. None of the
+    summary counts change unexpectedly — ``lexical_pairs`` and
+    ``semantic_pairs`` match what they would be on the same vault
+    with no groups at all (1 each), and ``group_pairs`` is 1
+    from the new pass. This is the AC12 + AC13 + AC14 coexistence
+    test.
+    """
+    vault_root = str(tmp_path)
+    # S1 and S2 share a hanzi token (``吃``) AND identical
+    # meaning AND are both in the same group. After
+    # compute_connections, each side must have THREE distinct
+    # edges pointing at the other, one per kind.
+    _seed_vault_with_groups(
+        vault_root,
+        sentences=[
+            _make_sentence(
+                unit_id="S1", hanzi="我喜欢吃", meaning="I love to eat"
+            ),
+            _make_sentence(
+                unit_id="S2", hanzi="你也吃吗", meaning="I love to eat"
+            ),
+        ],
+        groups=[
+            _make_group("eating-group", ["S1", "S2"]),
+        ],
+    )
+
+    summary = compute_connections(vault_root, embedder=_emb())
+
+    # Lexical and semantic counts are unaffected by the group
+    # pass — they read the same sentence input and arrive at
+    # the same pairwise scores.
+    assert summary["lexical_pairs"] == 1
+    assert summary["semantic_pairs"] == 1
+    # Group pass adds exactly one unordered pair.
+    assert summary["group_pairs"] == 1
+
+    s1 = read_unit(vault_root, "sentence", "S1")
+    s2 = read_unit(vault_root, "sentence", "S2")
+
+    # Each unit has exactly one edge of each kind pointing at
+    # the other. Total connections per unit: 3.
+    kinds_s1 = sorted(
+        e["kind"] for e in s1["connections"] if isinstance(e, dict)
+    )
+    kinds_s2 = sorted(
+        e["kind"] for e in s2["connections"] if isinstance(e, dict)
+    )
+    assert kinds_s1 == ["group", "lexical", "semantic"]
+    assert kinds_s2 == ["group", "lexical", "semantic"]
+
+    # And within each kind, the partner is the other unit.
+    for edge in _group_edges(s1):
+        assert edge["to"] == "S2"
+    for edge in _group_edges(s2):
+        assert edge["to"] == "S1"
+
+
+def test_group_pairs_summary_includes_alias(tmp_path: Path) -> None:
+    """``summary["group_pairs"]`` and ``summary["group_pairs_written"]``
+    agree — the alias is kept for consistency with the
+    ``sentence_lexical_pairs_written`` / ``semantic_pairs_written``
+    aliases already in the summary.
+
+    This guards against a future refactor accidentally renaming
+    one of the two keys without updating the other.
+    """
+    vault_root = str(tmp_path)
+    _seed_vault_with_groups(
+        vault_root,
+        sentences=[
+            _make_sentence(unit_id="S1", hanzi="a"),
+            _make_sentence(unit_id="S2", hanzi="b"),
+        ],
+        groups=[
+            _make_group("g", ["S1", "S2"]),
+        ],
+    )
+
+    summary = compute_connections(vault_root, embedder=_emb())
+
+    assert "group_pairs" in summary
+    assert "group_pairs_written" in summary
+    assert summary["group_pairs"] == summary["group_pairs_written"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Pure-algorithm tests for the group pass (T17)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_sentence_group_edges_pure_no_io() -> None:
+    """The pure group helper accepts in-memory sentence and group
+    lists and returns edges without touching the vault.
+
+    Two sentences are both in ``g1``; a third sentence is in
+    ``g2`` alone. Expected outcome: one pair (S1, S2) with a
+    shared group ⇒ one edge each direction, score 1.0. S3 is
+    skipped (no shared group with anyone). ``group_pairs`` is 1.
+    """
+    sentences = [
+        _make_sentence(unit_id="S1", hanzi="ab"),
+        _make_sentence(unit_id="S2", hanzi="cd"),
+        _make_sentence(unit_id="S3", hanzi="ef"),
+    ]
+    groups = [
+        _make_group("g1", ["S1", "S2"]),
+        _make_group("g2", ["S3"]),
+    ]
+
+    edges, pairs, skipped = _compute_sentence_group_edges(
+        sentences, groups
+    )
+
+    assert skipped == 0
+    assert pairs == 1
+    assert edges.get("S1") == [("S2", pytest.approx(1.0))]
+    assert edges.get("S2") == [("S1", pytest.approx(1.0))]
+    # S3 has no shared group with S1 or S2 → no entry at all.
+    assert "S3" not in edges
+
+
+def test_compute_sentence_group_edges_deduplicates_multiple_groups() -> None:
+    """Multiple shared groups between the same pair collapse to
+    ONE edge per side (the ``(to, kind)`` upsert contract is the
+    I/O layer's responsibility; the algorithm layer writes one
+    edge per unordered pair regardless of how many groups they
+    share).
+    """
+    sentences = [
+        _make_sentence(unit_id="A", hanzi="a"),
+        _make_sentence(unit_id="B", hanzi="b"),
+    ]
+    groups = [
+        _make_group("g1", ["A", "B"]),
+        _make_group("g2", ["A", "B"]),
+        _make_group("g3", ["A", "B"]),
+    ]
+
+    edges, pairs, skipped = _compute_sentence_group_edges(
+        sentences, groups
+    )
+
+    assert pairs == 1  # one unordered pair
+    assert skipped == 0
+    # Exactly one edge each direction, not three.
+    assert edges["A"] == [("B", pytest.approx(1.0))]
+    assert edges["B"] == [("A", pytest.approx(1.0))]
+
+
+def test_compute_sentence_group_edges_skips_ungrouped_sentences() -> None:
+    """A sentence with no group membership is not a key in the
+    returned edge map and contributes no edges."""
+    sentences = [
+        _make_sentence(unit_id="S1", hanzi="a"),
+        _make_sentence(unit_id="S2", hanzi="b"),
+        _make_sentence(unit_id="S3", hanzi="c"),  # no membership
+    ]
+    groups = [
+        _make_group("only-s1s2", ["S1", "S2"]),
+    ]
+
+    edges, pairs, skipped = _compute_sentence_group_edges(
+        sentences, groups
+    )
+
+    assert pairs == 1
+    assert "S3" not in edges
+    # S3 is NOT counted as skipped — only sentences with a
+    # non-string id are. It simply contributes no edges, which is
+    # the AC14 contract.
+    assert skipped == 0
+
+
+def test_compute_sentence_group_edges_skips_sentences_without_id() -> None:
+    """A sentence whose ``id`` is not a string is skipped (counted
+    in the ``skipped`` counter) and contributes no edges.
+
+    The group pass has no requirement on ``properties.hanzi`` or
+    ``properties.meaning`` — only the id needs to be a usable
+    string. A non-string id is the only thing that causes a
+    sentence to be counted as skipped by this helper.
+    """
+    sentences = [
+        _make_sentence(unit_id="S1", hanzi="a"),
+        # id is an int, not a string → skipped.
+        {
+            "id": 99,  # type: ignore[dict-item]
+            "type": "sentence",
+            "properties": {"hanzi": "x"},
+            "connections": [],
+        },
+    ]
+    # The group has only one valid-string-id member (S1) so no
+    # unordered pair can be formed regardless. The int-id unit
+    # is counted as skipped.
+    groups = [
+        _make_group("g", ["S1"]),
+    ]
+
+    edges, pairs, skipped = _compute_sentence_group_edges(
+        sentences, groups
+    )
+
+    assert pairs == 0
+    assert skipped == 1  # the int-id unit
+    assert edges == {}
+
+
+def test_compute_sentence_group_edges_no_self_loops() -> None:
+    """A sentence that is its own group member never gets a
+    ``group`` edge pointing at itself.
+
+    AC14 forbids self-loops. We construct a single-sentence
+    vault where the sentence is a member of a group; the pair
+    loop (which uses ``i < j``) cannot form a pair with itself,
+    so no edge is written. This guards against future refactors
+    that loosen the loop bound.
+    """
+    sentences = [
+        _make_sentence(unit_id="S1", hanzi="a"),
+    ]
+    groups = [
+        _make_group("g", ["S1"]),
+    ]
+
+    edges, pairs, skipped = _compute_sentence_group_edges(
+        sentences, groups
+    )
+
+    assert pairs == 0
+    assert skipped == 0
+    assert edges == {}
+
+
+def test_compute_sentence_group_edges_handles_missing_members_field() -> None:
+    """A group unit with missing or malformed ``properties.members``
+    is treated as if it has no members — it contributes nothing
+    to the membership index and no edges are written.
+
+    The algorithm must tolerate a corrupt vault entry without
+    crashing.
+    """
+    sentences = [
+        _make_sentence(unit_id="S1", hanzi="a"),
+        _make_sentence(unit_id="S2", hanzi="b"),
+    ]
+    # Group with no ``properties`` at all.
+    bad_group_no_props: dict = {
+        "id": "g-no-props",
+        "type": "group",
+        "name": "g-no-props",
+        "connections": [],
+    }
+    # Group whose ``properties.members`` is not a list.
+    bad_group_bad_members: dict = {
+        "id": "g-bad-members",
+        "type": "group",
+        "name": "g-bad-members",
+        "properties": {"members": "not a list"},
+        "connections": [],
+    }
+
+    edges, pairs, skipped = _compute_sentence_group_edges(
+        sentences, [bad_group_no_props, bad_group_bad_members]
+    )
+
+    # Neither group contributes a member, so no pair shares a
+    # group and no edges are written. The malformed groups are
+    # silently ignored — no exception.
+    assert pairs == 0
+    assert skipped == 0
+    assert edges == {}

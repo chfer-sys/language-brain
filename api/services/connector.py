@@ -5,25 +5,26 @@ SPEC §2.4 ("Connections — the four link kinds") — the part that
 materializes connections directly on the unit file rather than
 computing them at query time.
 
-Scope of this task (T15 + T16)
------------------------------
+Scope of this task (T15 + T16 + T17)
+------------------------------------
 T15 implemented the ``lexical`` kind for the sentence ↔ sentence
 direction (SPEC §6 AC12). T16 extends :func:`compute_connections`
 additively with the ``semantic`` kind (SPEC §6 AC13): symmetric
 ``semantic`` edges between any two sentence units whose
 ``properties.meaning`` fields have cosine similarity strictly above
 ``_SEMANTIC_THRESHOLD`` (default ``0.6``, tunable per AC13).
-Future tasks will continue to extend the same entry point:
+T17 adds the ``group`` kind (SPEC §6 AC14): symmetric ``group``
+edges between any two sentence units that share membership in at
+least one group unit (score fixed at 1.0). The future T18 will
+continue to extend the same entry point:
 
-* **T17** — adds the ``group`` kind (write ``group`` edges between
-  any two units that share group membership per AC14).
 * **T18** — adds the ``opposite`` kind (write symmetric ``opposite``
   edges when ``antonyms`` reference another unit's id per AC15).
 
-Algorithm (T15 + T16)
---------------------
-For every pair of sentence units in the vault, two independent
-similarity passes are run and their results are unioned:
+Algorithm (T15 + T16 + T17)
+---------------------------
+For every pair of sentence units in the vault, three independent
+passes are run and their results are unioned:
 
 1. **Lexical (T15, AC12).** If their ``properties.hanzi`` share at
    least one token after :func:`api.services.lexical.tokenize_sentence`,
@@ -37,29 +38,40 @@ similarity passes are run and their results are unioned:
    with the cosine value as the score. Cosine is computed as the
    inner product because the embedder is contractually L2-normalized
    (see :mod:`api.services.embedder`).
+3. **Group (T17, AC14).** If two sentence units share membership in
+   at least one group unit (a group whose ``properties.members`` list
+   contains both unit ids), a ``group`` connection is written on
+   **both** sentence units with score fixed at 1.0. Group units
+   themselves are NEVER the source or target of a ``group`` edge
+   from this pass — per AC14, ``group`` edges are written between
+   the *members* of a group, not to the group. Word↔word and
+   word↔sentence group-sharing edges are out of scope for T17
+   (mirroring the sentence-only scope of the lexical and semantic
+   passes); only sentence ↔ sentence group-sharing is considered.
 
-Self-loops are never written by either pass.
+Self-loops are never written by any pass.
 
 Design for additive extension
 -----------------------------
 The work is split into two layers:
 
-* A pure algorithm layer (:func:`_compute_sentence_lexical_edges`)
-  takes the in-memory sentence list and returns a per-sentence
-  list of ``(other_id, score)`` edges to write. It does no I/O,
-  so it is unit-testable without any vault state.
+* A pure algorithm layer (e.g. :func:`_compute_sentence_lexical_edges`,
+  :func:`_compute_sentence_semantic_edges`,
+  :func:`_compute_sentence_group_edges`) takes the in-memory
+  sentence list (and, for the group pass, the in-memory group list)
+  and returns a per-sentence list of ``(other_id, score)`` edges to
+  write. It does no I/O, so it is unit-testable without any vault
+  state.
 * An I/O layer (:func:`compute_connections`) reads units, calls
   the algorithm layer, and writes the results back via the
   :mod:`api.services.unit_writer` helpers.
 
-Adding the ``group`` or ``opposite`` kinds in T17/T18 means
-adding a new pure helper (e.g. ``_compute_group_edges``) and
-calling it from :func:`compute_connections` *in addition to*
-the lexical and semantic computations, not replacing them.
-Each helper returns its own per-sentence edge list; the I/O
-layer unions them and upserts each into the unit's
-``connections`` list via the appropriate
-:func:`_upsert_*_edge` helper.
+Adding further kinds in T18 means adding a new pure helper and
+calling it from :func:`compute_connections` *in addition to* the
+lexical, semantic, and group computations, not replacing them.
+Each helper returns its own per-sentence edge list; the I/O layer
+unions them and upserts each into the unit's ``connections`` list
+via the appropriate :func:`_upsert_*_edge` helper.
 
 Idempotency
 -----------
@@ -118,6 +130,18 @@ _SEMANTIC_KIND: str = "semantic"
 #: the literal. The public entry point :func:`compute_connections`
 #: accepts ``semantic_threshold`` to override it per call.
 _SEMANTIC_THRESHOLD: float = 0.6
+
+#: Connection kind for the group pass (T17 / SPEC §6 AC14). A ``group``
+#: edge is written between two sentence units that share membership in
+#: at least one group unit. The kind is fixed by SPEC §2.4 / §6 AC14
+#: so the constant exists primarily to keep typos from compiling.
+_GROUP_KIND: str = "group"
+
+#: The fixed score attached to every ``group`` edge (SPEC §6 AC14:
+#: "score = 1.0"). The group pass has no continuous similarity to
+#: compute — membership is a binary fact — so we store the score as
+#: a module constant rather than a parameter.
+_GROUP_SCORE: float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +445,186 @@ def _compute_sentence_semantic_edges(
     return edges_by_source, semantic_pairs, skipped
 
 
+def _members_of_group(group_unit: dict[str, Any]) -> list[str]:
+    """Return the string-id ``properties.members`` of a group unit.
+
+    Returns an empty list if ``properties.members`` is missing,
+    not a list, or contains non-string entries. The function is
+    defensive: a corrupt or partially-authored group file should
+    not crash the whole reindex. Non-string member ids are
+    silently dropped (the caller treats them as if they were
+    absent), so a malformed group contributes fewer members
+    rather than raising mid-loop.
+
+    Note: per :mod:`api.services.group_registry`, members are
+    unit ids (sentence or word), NOT group ids — group-to-group
+    membership is out of scope for the MVP and this helper
+    inherits that constraint implicitly.
+    """
+    properties = group_unit.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    raw_members = properties.get("members")
+    if not isinstance(raw_members, list):
+        return []
+    return [m for m in raw_members if isinstance(m, str) and m]
+
+
+def _compute_sentence_group_edges(
+    sentences: list[dict[str, Any]],
+    groups: list[dict[str, Any]],
+) -> tuple[dict[str, list[tuple[str, float]]], int, int]:
+    """Compute the per-sentence group edge map from a sentence and
+    group list.
+
+    This is the pure (I/O-free) algorithm layer for the ``group``
+    kind (T17 / SPEC §6 AC14). It is structurally different from
+    the lexical and semantic helpers because the input is a
+    *membership relation* between two unit types rather than a
+    pairwise similarity over one unit type.
+
+    Scope of T17
+    ------------
+    For T17, ONLY sentence ↔ sentence pairs that share a group
+    membership are considered. This matches the existing lexical
+    and semantic passes, which are also sentence-only. Word ↔
+    word and word ↔ sentence group-sharing edges can be added in
+    a later task if the SPEC requires them; per AC14's plain
+    reading, "two units that share group membership" is symmetric
+    in unit type and extending to words is a forward-compatible
+    change that does not alter the current public contract.
+
+    Algorithm
+    ---------
+    1. Build ``group_membership: dict[member_id, set[group_id]]`` by
+       scanning each group's ``properties.members``. Non-string
+       members are dropped (see :func:`_members_of_group`).
+    2. Restrict the universe to sentence ids (a sentence whose id
+       has no group membership contributes no edges and is
+       skipped).
+    3. Enumerate unordered pairs of sentences in id-sorted order.
+       For each pair, if ``group_membership[a] & group_membership[b]``
+       is non-empty, write a symmetric ``group`` edge with score
+       :data:`_GROUP_SCORE`. The pair counter increments once
+       per shared-group pair (regardless of HOW MANY groups they
+       share — AC14 says "share membership in at least one
+       group", which yields a single edge, not one per group).
+
+    Parameters
+    ----------
+    sentences:
+        The sentence unit dicts to consider. Sentences without a
+        usable string ``id`` are skipped.
+    groups:
+        The group unit dicts to consider. Their ``properties.members``
+        is the membership index used for pair enumeration. Group
+        units are NEVER sources or targets of edges from this
+        helper — see the scope note above.
+
+    Returns
+    -------
+    edges_by_source:
+        Mapping ``sentence_id -> list of (other_id, score)`` tuples
+        that should be written as ``group`` edges on that
+        sentence's unit file. Only keys for sentences with at
+        least one outgoing edge are present.
+    group_pairs:
+        Number of *unordered* pairs of sentences that share at
+        least one group. Same semantics as ``lexical_pairs`` /
+        ``semantic_pairs``: counts pairs, not edges, and
+        deduplicates across multiple shared groups (two
+        sentences sharing three groups still count as ONE pair,
+        and receive ONE edge in each direction).
+    skipped:
+        Number of sentences skipped for having a non-string id.
+        Sentences with no group membership are NOT counted as
+        skipped — they simply contribute no edges, which is the
+        desired AC14 behavior.
+
+    Notes
+    -----
+    * Self-loops are explicitly excluded (the ``i < j`` enumeration
+      already guarantees distinct ids; we double-check defensively
+      so a future refactor that loosens the loop bound cannot
+      silently regress this invariant).
+    * Pairs are enumerated with ``i < j`` over id-sorted ids so
+      the output is byte-stable across runs.
+    * Multiple shared groups between the same pair collapse to
+      a single edge because we only write an edge if
+      ``group_membership[a] & group_membership[b]`` is non-empty;
+      the size of the intersection does not affect the edge
+      count or score. Idempotency follows from the same
+      ``(to, kind)`` upsert contract used by the lexical and
+      semantic passes.
+    """
+    # Step 1 — membership index.
+    group_membership: dict[str, set[str]] = {}
+    for group in groups:
+        group_id = group.get("id")
+        if not isinstance(group_id, str) or not group_id:
+            # A group without a usable id can't be referenced as a
+            # membership key. Skip silently — the algorithm must
+            # tolerate a corrupt vault entry without crashing.
+            continue
+        for member_id in _members_of_group(group):
+            group_membership.setdefault(member_id, set()).add(group_id)
+
+    # Step 2 — sentence universe, restricted to usable string ids.
+    sentence_ids: list[str] = []
+    skipped = 0
+    for unit in sentences:
+        unit_id = unit.get("id")
+        if isinstance(unit_id, str) and unit_id:
+            sentence_ids.append(unit_id)
+        else:
+            skipped += 1
+
+    # Sort for deterministic pair enumeration.
+    sentence_ids.sort()
+
+    edges_by_source: dict[str, list[tuple[str, float]]] = {}
+    group_pairs = 0
+
+    # Step 3 — pair scan. Same complexity budget as the lexical /
+    # semantic passes; for MVP-scale vaults (<1000 sentences per
+    # SPEC §4 N2) this is fine.
+    for i in range(len(sentence_ids)):
+        a_id = sentence_ids[i]
+        a_groups = group_membership.get(a_id)
+        if not a_groups:
+            # Sentence is not a member of any group — it cannot
+            # share a group with anyone. Skip the inner loop
+            # entirely.
+            continue
+        for j in range(i + 1, len(sentence_ids)):
+            b_id = sentence_ids[j]
+
+            if a_id == b_id:
+                continue  # defensive self-loop guard
+
+            b_groups = group_membership.get(b_id)
+            if not b_groups:
+                continue
+
+            # AC14: "share membership in at least one group".
+            # Set intersection is non-empty iff the two sentences
+            # are members of at least one common group. The
+            # actual size of the intersection is irrelevant —
+            # one shared group is enough for ONE edge per pair.
+            if not (a_groups & b_groups):
+                continue
+
+            edges_by_source.setdefault(a_id, []).append(
+                (b_id, _GROUP_SCORE)
+            )
+            edges_by_source.setdefault(b_id, []).append(
+                (a_id, _GROUP_SCORE)
+            )
+            group_pairs += 1
+
+    return edges_by_source, group_pairs, skipped
+
+
 # ---------------------------------------------------------------------------
 # Edge upsert
 # ---------------------------------------------------------------------------
@@ -519,6 +723,59 @@ def _upsert_semantic_edge(
     return True
 
 
+def _upsert_group_edge(
+    unit: dict[str, Any],
+    other_id: str,
+    score: float = _GROUP_SCORE,
+) -> bool:
+    """Upsert one ``group`` edge on ``unit``'s connections list.
+
+    Behavior is structurally identical to
+    :func:`_upsert_lexical_edge` and :func:`_upsert_semantic_edge`,
+    but targets ``_GROUP_KIND`` edges instead. See
+    :func:`_upsert_lexical_edge` for the full contract; the short
+    version is:
+
+    * If a ``group`` connection to ``other_id`` already exists, its
+      ``score`` is updated in place at the same list index.
+      Returns ``False``.
+    * Otherwise a new
+      ``{"to": other_id, "kind": "group", "score": float(score)}``
+      entry is appended. Returns ``True``.
+    * Connections of OTHER kinds are never touched.
+    * A missing or non-list ``connections`` field is repaired to
+      an empty list.
+
+    ``score`` defaults to :data:`_GROUP_SCORE` (``1.0``) per
+    SPEC §6 AC14. The parameter is retained so the helper can
+    be reused for tests or future AC14-style kinds without
+    re-plumbing the upsert contract.
+
+    Keeping this as a separate helper (rather than generalizing
+    with a ``kind`` parameter) preserves the type-narrowing benefit
+    of the dedicated ``_upsert_lexical_edge`` / ``_upsert_semantic_edge``
+    call sites and makes the per-kind behavior trivially auditable.
+    """
+    connections = unit.get("connections")
+    if not isinstance(connections, list):
+        connections = []
+        unit["connections"] = connections
+
+    for idx, edge in enumerate(connections):
+        if (
+            isinstance(edge, dict)
+            and edge.get("kind") == _GROUP_KIND
+            and edge.get("to") == other_id
+        ):
+            connections[idx]["score"] = float(score)
+            return False
+
+    connections.append(
+        {"to": other_id, "kind": _GROUP_KIND, "score": float(score)}
+    )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -533,13 +790,15 @@ def compute_connections(
 
     T15 implements the sentence ↔ sentence ``lexical`` kind
     (SPEC §6 AC12); T16 adds the ``semantic`` kind (AC13) on the
-    same entry point. The function is designed so that T17/T18
-    (group, opposite) can add their own computation helpers and
-    union the results into the same per-unit connections list.
+    same entry point; T17 adds the ``group`` kind (AC14). The
+    function is designed so that T18 (opposite) can add its own
+    computation helper and union the results into the same
+    per-unit connections list.
 
     Behavior
     --------
-    1. Reads every sentence unit under ``vault_root``.
+    1. Reads every sentence unit and every group unit under
+       ``vault_root``.
     2. Calls :func:`_compute_sentence_lexical_edges` to produce a
        per-sentence list of ``(other_id, score)`` pairs to write
        as ``lexical`` edges.
@@ -549,18 +808,21 @@ def compute_connections(
        here (lazy default to :func:`api.services.embedder.get_embedder`)
        so that the lexical pass can run with no embedder cost
        when only AC12 is needed.
-    4. For each sentence that has outgoing edges of either kind,
-       merges the lexical and semantic edge lists and upserts
-       each via the appropriate
-       :func:`_upsert_lexical_edge` / :func:`_upsert_semantic_edge`
-       helper (preserving position of existing same-kind edges).
-       Each touched unit is written ONCE at the end with all
-       edges merged, so the on-disk file is consistent on every
-       successful call.
-    5. Refreshes ``unit["updated"]`` to today's ISO date and
+    4. Calls :func:`_compute_sentence_group_edges` to produce a
+       per-sentence list of ``(other_id, _GROUP_SCORE)`` pairs
+       to write as ``group`` edges (T17 / AC14).
+    5. For each sentence that has outgoing edges of any kind,
+       merges the lexical, semantic, and group edge lists and
+       upserts each via the appropriate
+       :func:`_upsert_lexical_edge` / :func:`_upsert_semantic_edge` /
+       :func:`_upsert_group_edge` helper (preserving position of
+       existing same-kind edges). Each touched unit is written
+       ONCE at the end with all edges merged, so the on-disk
+       file is consistent on every successful call.
+    6. Refreshes ``unit["updated"]`` to today's ISO date and
        writes the unit back via
        :func:`api.services.unit_writer.write_unit`.
-    6. Returns a summary dict describing what happened.
+    7. Returns a summary dict describing what happened.
 
     Idempotency
     -----------
@@ -604,6 +866,9 @@ def compute_connections(
         * ``semantic_pairs`` (:class:`int`) — number of unordered
           sentence pairs whose ``meaning`` cosine exceeds
           ``semantic_threshold``.
+        * ``group_pairs`` (:class:`int`) — number of unordered
+          sentence pairs that share membership in at least one
+          group (T17 / AC14).
         * ``skipped`` (:class:`int`) — number of sentences
           skipped by the combined passes (missing ``id`` or
           no usable ``properties.hanzi`` / ``properties.meaning``).
@@ -612,6 +877,8 @@ def compute_connections(
           the orchestrator's summary line.
         * ``semantic_pairs_written`` (:class:`int`) — alias for
           ``semantic_pairs`` mirroring the lexical alias.
+        * ``group_pairs_written`` (:class:`int`) — alias for
+          ``group_pairs`` mirroring the lexical/semantic aliases.
 
     Raises
     ------
@@ -655,15 +922,27 @@ def compute_connections(
         )
     )
 
+    # T17 / AC14 — group pass. Loads groups from disk and pairs up
+    # sentences that share at least one group's membership. The
+    # group pass is independent of the lexical and semantic passes
+    # and uses no embedder, so its failure mode (no groups on
+    # disk) gracefully degrades to "zero group pairs" without
+    # affecting the other counts.
+    groups = list_units_by_type(vault_root, "group")
+    group_edges, group_pairs, _group_skipped = (
+        _compute_sentence_group_edges(sentences, groups)
+    )
+
     # A sentence may contribute to ``skipped`` for lexical reasons
     # (no hanzi) but still participate in semantic edges (has a
-    # meaning), or vice versa. The reported ``skipped`` is the
-    # number of sentences that contributed NO outgoing edge to
-    # either pass, derived from the merged edge map so it stays
-    # accurate as more kinds are added in T17/T18. The raw
-    # per-pass skip counts are intentionally NOT added to the
-    # summary — they would over-count units that are partial on
-    # one axis but valid on the other.
+    # meaning), or vice versa, or via a group edge (T17). The
+    # reported ``skipped`` is the number of sentences that
+    # contributed NO outgoing edge to ANY pass, derived from the
+    # merged edge map so it stays accurate as more kinds are
+    # added in T18. The raw per-pass skip counts are
+    # intentionally NOT added to the summary — they would
+    # over-count units that are partial on one axis but valid
+    # on another.
     sentences_touched = 0
     # Index the in-memory list by id so we can mutate the actual
     # dict read from disk (list_units_by_type returns the parsed
@@ -676,10 +955,10 @@ def compute_connections(
         if isinstance(unit_id, str) and unit_id:
             by_id[unit_id] = unit
 
-    # Union the two edge maps. The semantic helper tags every
-    # edge with its kind so the I/O loop can dispatch to the
-    # right upsert helper. Order is deterministic because both
-    # pure helpers enumerate pairs in id-sorted order.
+    # Union the three edge maps. Each helper tags every edge with
+    # its kind so the I/O loop can dispatch to the right upsert
+    # helper. Order is deterministic because all pure helpers
+    # enumerate pairs in id-sorted order.
     merged: dict[str, list[tuple[str, float, str]]] = {}
     for source_id, edges in lexical_edges.items():
         merged.setdefault(source_id, []).extend(
@@ -688,6 +967,10 @@ def compute_connections(
     for source_id, edges in semantic_edges.items():
         merged.setdefault(source_id, []).extend(
             (other_id, score, _SEMANTIC_KIND) for other_id, score in edges
+        )
+    for source_id, edges in group_edges.items():
+        merged.setdefault(source_id, []).extend(
+            (other_id, score, _GROUP_KIND) for other_id, score in edges
         )
 
     for source_id, edges in merged.items():
@@ -703,6 +986,8 @@ def compute_connections(
                 _upsert_lexical_edge(unit, other_id, score)
             elif kind == _SEMANTIC_KIND:
                 _upsert_semantic_edge(unit, other_id, score)
+            elif kind == _GROUP_KIND:
+                _upsert_group_edge(unit, other_id, score)
             # No other kind at this point; an unexpected kind
             # would be a programming bug, not user input.
         unit["updated"] = _today_iso()
@@ -722,8 +1007,10 @@ def compute_connections(
         "sentences_touched": sentences_touched,
         "lexical_pairs": lexical_pairs,
         "semantic_pairs": semantic_pairs,
+        "group_pairs": group_pairs,
         "sentence_lexical_pairs_written": lexical_pairs,
         "semantic_pairs_written": semantic_pairs,
+        "group_pairs_written": group_pairs,
         "skipped": skipped,
     }
 
