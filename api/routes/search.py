@@ -63,7 +63,12 @@ from fastapi import APIRouter, Query
 
 from api.config import settings
 from api.schemas import SearchResponse, SearchResultItem
-from api.services.search import SearchHit, lexical_search, merge_hits, semantic_search
+from api.services.search import (
+    SearchHit,
+    lexical_search,
+    merge_hits_with_kinds,
+    semantic_search,
+)
 
 log = logging.getLogger(__name__)
 
@@ -108,14 +113,14 @@ def _parse_csv(raw: str | None) -> list[str] | None:
     return parts
 
 
-def _hit_to_item(hit: SearchHit) -> SearchResultItem:
+def _hit_to_item(hit: SearchHit, kinds: list[str]) -> SearchResultItem:
     """Map a :class:`SearchHit` to its API response shape.
 
-    ``kinds`` is always ``[]`` in T20 — the lexical ranker is
-    naive (it doesn't look at the connection graph), so we don't
-    know which connection kinds link this unit back to the
-    query. T22/T23 will compute the list by intersecting the
-    unit's ``connections`` with the requested ``kinds`` filter.
+    ``kinds`` is the alphabetically-sorted list of connection kinds
+    that produced at least one hit for ``(hit.unit_id, hit.unit_type)``
+    in the kinded merge (T22). The route layer pre-sorts before
+    calling so the JSON serialization is deterministic regardless
+    of set-iteration order.
     """
     return SearchResultItem(
         id=hit.unit_id,
@@ -123,7 +128,7 @@ def _hit_to_item(hit: SearchHit) -> SearchResultItem:
         name=hit.name,
         snippet=hit.snippet,
         score=hit.score,
-        kinds=[],
+        kinds=sorted(kinds),
     )
 
 
@@ -223,13 +228,38 @@ def search(
     if (service_types is None) or ("sentence" in service_types):
         semantic_hits = semantic_search(vault_root, query=q, limit=limit)
 
-    merged = merge_hits(lexical_hits, semantic_hits)
+    merged, kinds_by_key = merge_hits_with_kinds(
+        ("lexical", lexical_hits),
+        ("semantic", semantic_hits),
+    )
+
+    # AC18 — kinds toggle. When the caller restricted ``parsed_kinds``
+    # (e.g. ``?kinds=semantic``), drop any hit whose producing-kinds
+    # set has empty intersection with the request set. This is what
+    # "disabling the semantic toggle removes all semantic-kind results"
+    # means in the SPEC.
+    if parsed_kinds is not None:
+        allowed = set(parsed_kinds)
+        merged = [
+            hit
+            for hit in merged
+            if kinds_by_key[(hit.unit_id, hit.unit_type)] & allowed
+        ]
+
     # Apply the limit AFTER merge so the user gets the best of
     # both passes, not just the lexical top-N.
     if limit > 0:
         merged = merged[:limit]
 
-    items = [_hit_to_item(h) for h in merged]
+    items = [
+        _hit_to_item(
+            hit,
+            kinds=sorted(
+                kinds_by_key[(hit.unit_id, hit.unit_type)]
+            ),
+        )
+        for hit in merged
+    ]
 
     log.info(
         "GET /api/search q=%r limit=%d types=%s kinds=%s lexical=%d semantic=%d returned=%d",

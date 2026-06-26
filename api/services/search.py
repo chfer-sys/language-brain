@@ -627,6 +627,82 @@ def merge_hits(*hit_lists: list[SearchHit]) -> list[SearchHit]:
     )
 
 
+def merge_hits_with_kinds(
+    *kinded_lists: tuple[str, list[SearchHit]],
+) -> tuple[list[SearchHit], dict[tuple[str, str], set[str]]]:
+    """Union of per-kind hit lists, tracking which kinds produced each key.
+
+    T22 introduces the kinds toggle (SPEC §6 AC18). The route layer
+    needs to know, for each surviving hit, *which* kinds produced at
+    least one match for that key — so it can populate the response
+    row's ``kinds`` list and so it can filter out keys whose only
+    producing kind has been disabled by the caller.
+
+    Each positional argument is a ``(kind_str, [SearchHit, ...])``
+    tuple. ``kind_str`` is a short label identifying the producing
+    pass — ``"lexical"``, ``"semantic"``, and (in T23+) ``"group"``
+    and ``"opposite"``. The kind string is opaque to this function;
+    it is recorded verbatim in the returned set.
+
+    Behavior mirrors :func:`merge_hits` for the dedup-and-max-score
+    half: the surviving :class:`SearchHit` for a key is the
+    highest-scoring occurrence across all input lists, ties broken
+    by first occurrence (left-to-right argument order).
+
+    Parameters
+    ----------
+    *kinded_lists:
+        Zero or more ``(kind, hits)`` tuples. Order matters only
+        for tie-breaking on identical scores; otherwise output is
+        sorted deterministically by ``(-score, unit_id, unit_type)``.
+
+    Returns
+    -------
+    tuple[list[SearchHit], dict[tuple[str, str], set[str]]]
+        ``(merged_hits, kinds_by_key)`` where ``merged_hits`` is
+        the sorted, deduplicated union and ``kinds_by_key[key]``
+        is the set of kind strings that produced at least one hit
+        for ``key``. A key produced by both ``"lexical"`` and
+        ``"semantic"`` lists appears once in ``merged_hits`` with
+        ``kinds_by_key[key] == {"lexical", "semantic"}``. Empty
+        input returns ``([], {})``.
+
+    Notes
+    -----
+    The kinds map is not sorted here — sorting belongs to the
+    caller (the route layer) when it shapes the JSON response.
+    Keeping it as a set lets the route test set intersection
+    against the ``kinds`` query parameter cheaply.
+    """
+    if not kinded_lists:
+        return [], {}
+    best_by_key: dict[tuple[str, str], SearchHit] = {}
+    kinds_by_key: dict[tuple[str, str], set[str]] = {}
+    for kind, hit_list in kinded_lists:
+        if not hit_list:
+            continue
+        for hit in hit_list:
+            key = (hit.unit_id, hit.unit_type)
+            existing = best_by_key.get(key)
+            if existing is None or hit.score > existing.score:
+                best_by_key[key] = hit
+            # Record that *this* kind produced a hit for this key,
+            # regardless of which occurrence wins on score. A key
+            # hit by both lexical and semantic must report both
+            # kinds in the response, even if one of them scores
+            # lower than the winner.
+            bucket = kinds_by_key.get(key)
+            if bucket is None:
+                kinds_by_key[key] = {kind}
+            else:
+                bucket.add(kind)
+    merged = sorted(
+        best_by_key.values(),
+        key=lambda h: (-h.score, h.unit_id, h.unit_type),
+    )
+    return merged, kinds_by_key
+
+
 __all__ = [
     "SearchHit",
     "has_english_or_meaning_key",
@@ -634,5 +710,6 @@ __all__ = [
     "lexical_rank",
     "lexical_search",
     "merge_hits",
+    "merge_hits_with_kinds",
     "semantic_search",
 ]
