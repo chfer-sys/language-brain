@@ -1,7 +1,9 @@
 <script lang="ts">
   import SearchBox from '$lib/components/SearchBox.svelte';
   import ResultRow from '$lib/components/ResultRow.svelte';
-  import { search, type SearchResult } from '$lib/api';
+  import KindToggles from '$lib/components/KindToggles.svelte';
+  import UnitTypeFilters from '$lib/components/UnitTypeFilters.svelte';
+  import { search, type ConnectionKind, type SearchResult, type UnitType } from '$lib/api';
 
   const PLACEHOLDER = 'Try: 看起来好吃 or 吃 or basic-verbs';
   const DEBOUNCE_MS = 200;
@@ -12,15 +14,27 @@
   let error: string | null = null;
   let requestSeq = 0;
 
-  // AC23: debounce the search by 200ms after the user stops typing.
-  // Each input event resets the timer. Only the most recent value
-  // triggers a fetch, and stale responses (older requestSeq) are
-  // discarded so a slow earlier response can't overwrite a fast
-  // later one.
+  // Kind-toggles + type-filters. All on by default per SPEC §3.2.
+  // Empty-array means "no filter" (server returns all). When the user
+  // toggles one off, we pass only the enabled values; when all are off
+  // we short-circuit to an empty result set without a network call.
+  let kinds: Record<ConnectionKind, boolean> = {
+    lexical: true,
+    semantic: true,
+    group: true,
+    opposite: true
+  };
+  let types: Record<UnitType, boolean> = {
+    sentence: true,
+    word: true,
+    group: true
+  };
+
+  // AC23 debounce. Each keystroke (or toggle/filter change) resets the
+  // timer. Stale responses are discarded via requestSeq.
   let timer: ReturnType<typeof setTimeout> | null = null;
 
-  function onInput(e: CustomEvent<string>) {
-    query = e.detail;
+  function scheduleSearch() {
     if (timer !== null) clearTimeout(timer);
     if (query.trim().length === 0) {
       results = [];
@@ -31,13 +45,41 @@
     timer = setTimeout(runSearch, DEBOUNCE_MS);
   }
 
+  function onInput(e: CustomEvent<string>) {
+    query = e.detail;
+    scheduleSearch();
+  }
+
+  function onKindsChange(e: CustomEvent<Record<ConnectionKind, boolean>>) {
+    kinds = e.detail;
+    scheduleSearch();
+  }
+
+  function onTypesChange(e: CustomEvent<Record<UnitType, boolean>>) {
+    types = e.detail;
+    scheduleSearch();
+  }
+
+  $: enabledKinds = (Object.keys(kinds) as ConnectionKind[]).filter((k) => kinds[k]);
+  $: enabledTypes = (Object.keys(types) as UnitType[]).filter((t) => types[t]);
+  $: allKindsOff = enabledKinds.length === 0;
+  $: allTypesOff = enabledTypes.length === 0;
+
   async function runSearch() {
+    if (allKindsOff || allTypesOff) {
+      results = [];
+      loading = false;
+      error = null;
+      return;
+    }
     const mySeq = ++requestSeq;
     loading = true;
     error = null;
     try {
-      const resp = await search(query.trim());
-      // Drop stale responses (a newer keystroke already fired).
+      const resp = await search(query.trim(), {
+        kinds: enabledKinds,
+        types: enabledTypes
+      });
       if (mySeq !== requestSeq) return;
       results = resp.results;
     } catch (e) {
@@ -69,13 +111,26 @@
   </nav>
 </div>
 
-<!-- Results pane (below the fold per AC22). Empty state is silent —
-     the user only sees results once they type something. -->
+<!-- Control bar: kind-toggles + unit-type filters. Visible only when
+     there's a query, so the above-the-fold area stays focused on the
+     search box per AC22. Per AC24 each control updates the result
+     pane without a page reload (we use Svelte reactivity, not a
+     router navigation). -->
+{#if query.trim().length > 0}
+  <div class="control-bar" data-testid="control-bar">
+    <KindToggles enabled={kinds} on:change={onKindsChange} />
+    <UnitTypeFilters enabled={types} on:change={onTypesChange} />
+  </div>
+{/if}
+
+<!-- Results pane (below the fold per AC22). -->
 <section class="results-pane" aria-label="Search results">
   {#if loading}
     <p class="status">Searching…</p>
   {:else if error}
     <p class="status error" role="alert">{error}</p>
+  {:else if allKindsOff || allTypesOff}
+    <p class="status">All filters off — re-enable at least one kind and one type.</p>
   {:else if query.trim().length > 0 && results.length === 0}
     <p class="status">No results for "{query.trim()}".</p>
   {:else if results.length > 0}
@@ -164,9 +219,19 @@
     text-decoration: underline;
   }
 
+  .control-bar {
+    max-width: 720px;
+    margin: 8px auto 0;
+    padding: 0 24px;
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
   .results-pane {
     max-width: 720px;
-    margin: 32px auto 64px;
+    margin: 20px auto 64px;
     padding: 0 24px;
   }
 
