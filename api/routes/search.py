@@ -60,13 +60,20 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Path, Query
 
 from api.config import settings
-from api.schemas import SearchResponse, SearchResultItem, SuggestResponse
+from api.schemas import (
+    MeaningSentenceItem,
+    MeaningsResponse,
+    SearchResponse,
+    SearchResultItem,
+    SuggestResponse,
+)
 from api.services.search import (
     SearchHit,
     lexical_search,
+    meanings_search,
     merge_hits_with_kinds,
     semantic_search,
     suggest_units,
@@ -377,6 +384,112 @@ def search(
     )
 
     return SearchResponse(query=q, results=items)
+
+
+@router.get("/meanings/{text}/sentences", response_model=MeaningsResponse)
+def meanings_sentences(
+    text: str = Path(
+        ...,
+        min_length=1,
+        description=(
+            "The English meaning fragment to look up. The text is "
+            "embedded in-memory and discarded after the response — "
+            "it is never persisted and never logged at INFO level."
+        ),
+    ),
+    threshold: float = Query(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Cosine-similarity cutoff in [0.0, 1.0]. Hits at or below "
+            "this value are dropped. Defaults to 0.6 per SPEC §6 AC27c."
+        ),
+    ),
+    limit: int = Query(
+        default=20,
+        ge=1,
+        le=100,
+        description="Maximum number of sentence units to return.",
+    ),
+) -> MeaningsResponse:
+    """GET /api/meanings/{text}/sentences — meaning-based lookup (T27).
+
+    Implements SPEC §5.3's meaning-lookup endpoint and satisfies
+    SPEC §6 AC27c. Given an English ``text`` path parameter,
+    returns all sentence units whose ``meaning`` field is
+    semantically similar to the query (FAISS cosine > threshold).
+
+    The response payload contains only ``id``, ``hanzi``,
+    ``pinyin``, and ``score`` per result. ``english`` and
+    ``meaning`` are intentionally absent from both the service-
+    layer dict and the Pydantic response model — FastAPI's
+    serialization strips any field not declared on the model, so
+    the two layers stay in lockstep by construction.
+
+    Privacy
+    -------
+    The user's query text is held only in this function's local
+    ``text`` parameter and the embedded vector; both are GC'd
+    once the response is built. The INFO log line emitted on
+    completion records only the response size, threshold, and
+    limit — never the query text itself. This matches the SPEC's
+    AC27c privacy posture: user input must not enter the shared
+    log stream.
+
+    Errors
+    ------
+    * Missing ``text`` or ``text=""`` — FastAPI returns 422 via
+      the route's ``min_length=1`` constraint.
+    * ``text`` containing only whitespace — the route strips it
+      and raises 422 (the stripped result is empty).
+    * ``threshold`` outside ``[0.0, 1.0]`` — 422 (Pydantic).
+    * ``limit`` outside ``[1, 100]`` — 422 (Pydantic).
+    """
+    # ``min_length=1`` on the Path() validator only checks raw
+    # string length. A whitespace-only path (e.g. ``%20%20``)
+    # passes that check but is meaningless to the embedder, so
+    # we strip and reject it explicitly — mirroring the
+    # ``suggest`` route's whitespace guard.
+    stripped = text.strip()
+    if not stripped:
+        from fastapi import HTTPException, status
+
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="text must be non-empty after stripping whitespace",
+        )
+
+    vault_root = settings.vault
+    raw_items = meanings_search(
+        vault_root,
+        text=stripped,
+        threshold=threshold,
+        limit=limit,
+    )
+
+    items: list[MeaningSentenceItem] = [
+        MeaningSentenceItem(
+            id=item["id"],
+            hanzi=item["hanzi"],
+            pinyin=item["pinyin"],
+            score=item["score"],
+        )
+        for item in raw_items
+    ]
+
+    # Privacy: the INFO log records the response size, the
+    # threshold, and the limit — never the user's query text.
+    # This is the SPEC §6 AC27c privacy requirement: user
+    # English text must not enter the shared log stream.
+    log.info(
+        "GET /api/meanings/.../sentences threshold=%.4f limit=%d returned=%d",
+        threshold,
+        limit,
+        len(items),
+    )
+
+    return MeaningsResponse(query=stripped, results=items)
 
 
 __all__ = ["router"]

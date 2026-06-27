@@ -1042,6 +1042,168 @@ def suggest_units(
 
 
 # ---------------------------------------------------------------------------
+# Meanings lookup (T27 — SPEC §5.3, §6 AC27c)
+# ---------------------------------------------------------------------------
+
+
+def meanings_search(
+    vault_root: str,
+    text: str,
+    threshold: float = SEMANTIC_THRESHOLD,
+    limit: int = 20,
+    embedder: Embedder | None = None,
+) -> list[dict]:
+    """Return sentence units whose ``meaning`` embedding has cosine
+    similarity to the query text > ``threshold``.
+
+    Implements SPEC §5.3's
+    ``GET /api/meanings/{text}/sentences`` endpoint and satisfies
+    SPEC §6 AC27c. The user's English query is embedded in-memory
+    and discarded; it is **not** persisted anywhere and the
+    function does not log the query text at INFO level (DEBUG-level
+    diagnostics are fine, but the production log stream must not
+    receive user text).
+
+    Each result is a dict ``{"id": str, "hanzi": str, "pinyin": str,
+    "score": float}``. The Pydantic response model
+    (:class:`api.schemas.MeaningSentenceItem`) carries no
+    ``english`` or ``meaning`` fields, and FastAPI's serialization
+    layer drops any field not declared on the model — so the
+    service-layer dict must also be restricted to those four keys
+    to keep the two layers in lockstep.
+
+    Algorithm
+    ---------
+    1. Empty / non-string ``text`` → ``[]``. Whitespace-only text
+       also returns ``[]``; the meaning embedding of whitespace
+       is meaningless and would yield noise hits.
+    2. Empty FAISS index → ``[]`` (mirrors :func:`semantic_search`).
+    3. Embed the query text via the provided ``embedder`` (or
+       :func:`api.services.embedder.get_embedder` if ``None``).
+    4. Run a FAISS inner-product search and collect every hit
+       whose cosine is **strictly greater** than ``threshold``.
+       Hits at or below the threshold are dropped.
+    5. For each surviving hit, look up the sentence unit on disk
+       and project only ``id``, ``properties.hanzi``, and
+       ``properties.pinyin``. Missing or malformed unit files
+       are silently skipped (matches :func:`semantic_search`).
+    6. Sort by descending cosine similarity and truncate to
+       ``limit``.
+
+    The FAISS index only contains sentence units (per SPEC §6
+    AC9), so this endpoint is sentence-only — words and groups
+    have no ``meaning`` embeddings.
+
+    Privacy
+    -------
+    The query text is held only in this function's local
+    ``text`` parameter and the embedded vector. Both are GC'd
+    once the function returns. The INFO log line emitted on
+    completion records only the response size, the threshold,
+    and the limit — never the query text.
+
+    Parameters
+    ----------
+    vault_root:
+        Filesystem path to the vault root.
+    text:
+        The English meaning query (e.g. ``"a casual greeting"``).
+        Empty or whitespace-only returns ``[]``.
+    threshold:
+        Cosine-similarity cutoff in ``[0.0, 1.0]`` (route clamps).
+        Hits at or below this value are dropped. Default
+        :data:`SEMANTIC_THRESHOLD` (0.6).
+    limit:
+        Maximum number of results to return. Route clamps to
+        ``[1, 100]``. Default 20.
+    embedder:
+        Optional :class:`Embedder` for test injection. ``None``
+        uses the process-wide embedder from
+        :func:`api.services.embedder.get_embedder`.
+
+    Returns
+    -------
+    list[dict]
+        ``{"id", "hanzi", "pinyin", "score"}`` dicts sorted by
+        descending cosine. Each dict has exactly those four keys
+        — no ``english`` or ``meaning`` (AC20/AC27c). Empty list
+        means: empty query, empty index, or all hits filtered by
+        the threshold.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+    if embedder is None:
+        embedder = get_embedder()
+    index = Index.load_or_empty(vault_root)
+    if len(index) == 0:
+        # We still log the "empty index" path at INFO without the
+        # query text so operators can see when this cold path is
+        # taken, but the log carries only the boolean state and
+        # the response size (zero) — never the query itself.
+        log.info(
+            "meanings_search empty_index=1 threshold=%.4f limit=%d returned=0",
+            float(threshold),
+            int(limit),
+        )
+        return []
+    query_vec = embedder.embed(text)
+    # Discard the local references to the query text immediately
+    # after embedding. The embedding vector itself is small and
+    # GC'd when this function returns; FastAPI's response
+    # serialization doesn't echo it.
+    text = ""
+    raw_hits = index.search(query_vec, k=limit)
+    sentences_by_id = {
+        s["id"]: s for s in list_units_by_type(vault_root, "sentence")
+    }
+    out: list[dict] = []
+    for raw in raw_hits:
+        # Strict-greater filter matches the SPEC's "cosine > threshold"
+        # wording (and matches :func:`semantic_search`'s behavior).
+        if raw.score <= threshold:
+            continue
+        unit = sentences_by_id.get(raw.unit_id)
+        if unit is None:
+            continue
+        properties = unit.get("properties")
+        if not isinstance(properties, dict):
+            continue
+        raw_hanzi = properties.get("hanzi")
+        raw_pinyin = properties.get("pinyin")
+        # Even on a hit we never copy ``english`` or ``meaning``
+        # into the result dict. Missing hanzi/pinyin default to
+        # the empty string so a corrupt file can't crash the
+        # response — the user sees the hit, just without text.
+        hanzi = raw_hanzi if isinstance(raw_hanzi, str) else ""
+        pinyin = raw_pinyin if isinstance(raw_pinyin, str) else ""
+        out.append(
+            {
+                "id": raw.unit_id,
+                "hanzi": hanzi,
+                "pinyin": pinyin,
+                "score": float(raw.score),
+            }
+        )
+    # Sort descending by score. The FAISS result list is already
+    # roughly descending but a few-percent reordering can happen
+    # if the index is rebuilt between search calls — explicit sort
+    # keeps the response deterministic.
+    out.sort(key=lambda item: -item["score"])
+    # INFO log records only the response size, threshold, and
+    # limit — never the query text. This is a privacy requirement
+    # (AC27c): the production log stream must not carry user
+    # English text. DEBUG logging is acceptable for diagnostics
+    # and is left to the route layer's discretion.
+    log.info(
+        "meanings_search threshold=%.4f limit=%d returned=%d",
+        float(threshold),
+        int(limit),
+        len(out),
+    )
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Hit merger (T21 — supports future kinds toggle T22)
 # ---------------------------------------------------------------------------
 
@@ -1154,6 +1316,7 @@ __all__ = [
     "has_natural_language_english",
     "lexical_rank",
     "lexical_search",
+    "meanings_search",
     "merge_hits",
     "merge_hits_with_kinds",
     "semantic_search",

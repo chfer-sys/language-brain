@@ -234,10 +234,69 @@ class SuggestResponse(BaseModel):
     suggestions: list[SuggestionItem]
 
 
+# ---------------------------------------------------------------------------
+# GET /api/meanings/{text}/sentences — meaning-based lookup (T27)
+# ---------------------------------------------------------------------------
+
+
+class MeaningSentenceItem(BaseModel):
+    """One entry in a :class:`MeaningsResponse`.
+
+    Carries only the fields the frontend needs to render a result
+    card. Per SPEC §5.3 and §6 AC27c, ``english`` and ``meaning``
+    are intentionally absent — those fields live on the underlying
+    sentence unit but the route strips them. The Pydantic schema
+    declaration is the canonical gate: any field not listed here
+    is dropped by FastAPI's serialization layer.
+
+    Fields
+    ------
+    id:
+        The unit's stable id (e.g. ``"wo-xihuan-chi"``).
+    hanzi:
+        The unit's ``properties.hanzi`` — the Chinese sentence.
+    pinyin:
+        The unit's ``properties.pinyin`` — the tone-marked reading.
+    score:
+        The cosine similarity between the user's English query
+        embedding and the unit's ``meaning`` embedding. Bounded
+        in ``[-1, 1]`` (in practice ``(0.0, 1.0]`` for hits that
+        passed the threshold filter).
+    """
+
+    id: str
+    hanzi: str
+    pinyin: str
+    score: float
+
+
+class MeaningsResponse(BaseModel):
+    """Body of the meanings lookup response (SPEC §5.3, §6 AC27c).
+
+    ``query`` echoes the (stripped) English text the caller supplied
+    so the frontend can render "results for X" without bookkeeping.
+    The query itself is **not** persisted anywhere by this endpoint —
+    the service embeds it in-memory and discards both the text and
+    the vector once the response has been built.
+
+    ``results`` is the list of sentence units whose ``meaning``
+    embedding has cosine similarity to the query above the
+    threshold (default 0.6, configurable via the route's
+    ``threshold`` query parameter). Empty list means no matches
+    were above threshold, the index is empty, or the query was
+    empty / whitespace-only.
+    """
+
+    query: str
+    results: list[MeaningSentenceItem]
+
+
 __all__ = [
     "CommitSentenceRequest",
     "CommitSentenceResponse",
     "ConnectionKind",
+    "MeaningSentenceItem",
+    "MeaningsResponse",
     "ProposedGroupOut",
     "ProposeSentencesRequest",
     "ProposeSentencesResponse",
