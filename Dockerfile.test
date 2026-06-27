@@ -35,3 +35,10 @@ RUN pip install --no-cache-dir --default-timeout=600 --retries 5 -e ".[dev]"
 # Default: run pytest. Override with `docker run ... kilo-language-brain-test bash`.
 ENTRYPOINT ["pytest"]
 CMD ["tests/", "-v"]
+
+# Use the HF mirror for sentence-transformers model downloads. The
+# default endpoint (huggingface.co) is slow / blocked in some
+# regions; hf-mirror.com is a transparent mirror. Override at
+# runtime with `docker run -e HF_ENDPOINT=...` if needed.
+ENV HF_ENDPOINT=https://hf-mirror.com
+ENV HF_HOME=/root/.cache/huggingface

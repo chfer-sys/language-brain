@@ -163,18 +163,39 @@ class SentenceTransformerEmbedder:
 _embedder_singleton: Embedder | None = None
 
 
+def _embedder_mode_from_env() -> str | None:
+    """Read the optional ``LANGUAGE_BRAIN_EMBEDDER`` env var.
+
+    Returns ``"hashing"`` / ``"real"`` / ``None``. ``None`` means
+    "use the default behavior" (try real, fall back to hashing).
+    """
+    import os
+
+    raw = os.environ.get("LANGUAGE_BRAIN_EMBEDDER", "").strip().lower()
+    if raw in ("hashing", "real"):
+        return raw
+    return None
+
+
 def get_embedder(force: str | None = None) -> Embedder:
     """Return a process-wide embedder.
 
     ``force``:
       * ``"hashing"`` — HashingEmbedder (no model download)
       * ``"real"`` — SentenceTransformerEmbedder
-      * ``None`` (default) — real if available, else hashing
+      * ``None`` (default) — honor ``LANGUAGE_BRAIN_EMBEDDER`` env var
+        if set; otherwise try real, fall back to hashing on failure.
+
+    Setting ``LANGUAGE_BRAIN_EMBEDDER=hashing`` is the recommended way
+    to run the API in a sandboxed dev environment where HuggingFace
+    is unreachable — semantic search degrades to deterministic hash
+    vectors instead of hanging on model download.
     """
     global _embedder_singleton
-    if force == "hashing":
+    effective = force if force is not None else _embedder_mode_from_env()
+    if effective == "hashing":
         return HashingEmbedder()
-    if force == "real":
+    if effective == "real":
         return SentenceTransformerEmbedder()
     if _embedder_singleton is None:
         try:
