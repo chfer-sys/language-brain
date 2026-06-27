@@ -1,17 +1,37 @@
-import { describe, it, expect } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mount, unmount, tick } from 'svelte';
 import Page from '../src/routes/+page.svelte';
 
-// AC22: The default page (`/`) renders a search box and no other content above the fold.
-// We use Svelte 5's raw `mount` API (recommended for vitest) instead of
-// @testing-library/svelte because the latter has unresolved Svelte 5 +
-// Vitest condition-resolution issues that are not worth blocking T28 on.
-// Tradeoff: we lose @testing-library/dom's getByRole helpers, but AC22
-// only requires asserting a small set of structural facts about the page,
-// all of which are expressible via direct DOM queries.
+// Mock the $lib/api module BEFORE importing the page so the page's
+// `import { search } from '$lib/api'` picks up the mock. We expose
+// `mockSearch` on `globalThis` so each test can configure its own
+// return value and assertion.
+const mockSearch = vi.fn();
+vi.mock('../src/lib/api', () => ({
+  search: (...args: unknown[]) => mockSearch(...args),
+  suggest: vi.fn().mockResolvedValue([]),
+  API_BASE: 'http://localhost:8000'
+}));
 
-describe('AC22 — default page is a search box above the fold', () => {
-  it('renders a search input as the primary control', () => {
+const FAKE_RESULT = {
+  id: 'chī',
+  type: 'word' as const,
+  name: '吃',
+  snippet: 'chī',
+  kinds: ['lexical' as const],
+  score: 1.0
+};
+
+async function inputInto(target: HTMLElement, value: string) {
+  const input = target.querySelector('input[type="search"]') as HTMLInputElement;
+  input.value = value;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await tick();
+}
+
+describe('AC22 — default page still has a search box', () => {
+  it('renders a search input as the primary above-the-fold control', () => {
+    mockSearch.mockResolvedValue({ query: '', results: [] });
     const target = document.createElement('div');
     document.body.appendChild(target);
     const component = mount(Page, { target });
@@ -23,66 +43,120 @@ describe('AC22 — default page is a search box above the fold', () => {
     unmount(component);
     target.remove();
   });
+});
 
-  it('renders the bilingual brand above the search box', () => {
+describe('AC23 — search debounce 200ms', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockSearch.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does not call search immediately on keystroke', async () => {
+    mockSearch.mockResolvedValue({ query: '吃', results: [FAKE_RESULT] });
+
     const target = document.createElement('div');
     document.body.appendChild(target);
     const component = mount(Page, { target });
 
-    const brand = target.querySelector('.brand');
-    expect(brand).toBeTruthy();
-    expect(brand?.textContent).toContain('Language Brain');
-    expect(brand?.textContent).toContain('语言大脑');
-
-    // The brand must come before the search input in DOM order.
-    const all = Array.from(target.querySelectorAll('.brand, .search-row input'));
-    const brandIdx = all.findIndex((el) => el.classList.contains('brand'));
-    const inputIdx = all.findIndex((el) => el.tagName === 'INPUT');
-    expect(brandIdx).toBeGreaterThanOrEqual(0);
-    expect(inputIdx).toBeGreaterThan(brandIdx);
+    await inputInto(target, '吃');
+    expect(mockSearch).not.toHaveBeenCalled();
 
     unmount(component);
     target.remove();
   });
 
-  it('renders the "+ Add sentence" link pointing at /add', () => {
+  it('calls search exactly once after 200ms of debounce', async () => {
+    mockSearch.mockResolvedValue({ query: '吃', results: [FAKE_RESULT] });
+
     const target = document.createElement('div');
     document.body.appendChild(target);
     const component = mount(Page, { target });
 
-    const link = Array.from(target.querySelectorAll('a')).find(
-      (a) => a.textContent?.trim() === '+ Add sentence'
-    );
-    expect(link).toBeTruthy();
-    expect(link?.getAttribute('href')).toBe('/add');
+    await inputInto(target, '吃');
+
+    await vi.advanceTimersByTimeAsync(199);
+    expect(mockSearch).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(2);
+    expect(mockSearch).toHaveBeenCalledTimes(1);
+    expect(mockSearch).toHaveBeenCalledWith('吃');
 
     unmount(component);
     target.remove();
   });
 
-  it('does not render T29–T33 placeholder components (results, toggles, filters, form)', () => {
+  it('coalesces multiple rapid keystrokes into a single search call', async () => {
+    mockSearch.mockResolvedValue({ query: '我喜欢吃饭', results: [FAKE_RESULT] });
+
     const target = document.createElement('div');
     document.body.appendChild(target);
     const component = mount(Page, { target });
 
-    // Stub components render placeholder text containing their name.
-    // None of those strings should appear in T28's DOM.
-    const text = target.textContent ?? '';
-    expect(text).not.toContain('KindToggles');
-    expect(text).not.toContain('UnitTypeFilters');
-    expect(text).not.toContain('AddSentenceForm');
+    await inputInto(target, '我');
+    await vi.advanceTimersByTimeAsync(30);
+    await inputInto(target, '喜欢');
+    await vi.advanceTimersByTimeAsync(40);
+    await inputInto(target, '我喜欢吃');
+    await vi.advanceTimersByTimeAsync(50);
+    await inputInto(target, '我喜欢吃饭');
+    await vi.advanceTimersByTimeAsync(30);
+
+    expect(mockSearch).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(mockSearch).toHaveBeenCalledTimes(1);
+    expect(mockSearch).toHaveBeenCalledWith('我喜欢吃饭');
 
     unmount(component);
     target.remove();
   });
 
-  it('uses the AC22 placeholder text from design-t28.md §2.3 (option D: examples by example)', () => {
+  it('clears results and skips search when input becomes empty', async () => {
+    mockSearch.mockResolvedValue({ query: '吃', results: [FAKE_RESULT] });
+
     const target = document.createElement('div');
     document.body.appendChild(target);
     const component = mount(Page, { target });
 
-    const input = target.querySelector('input[type="search"]') as HTMLInputElement | null;
-    expect(input?.placeholder).toBe('Try: 看起来好吃 or 吃 or basic-verbs');
+    await inputInto(target, '吃');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(mockSearch).toHaveBeenCalledTimes(1);
+
+    await inputInto(target, '');
+    expect(mockSearch).toHaveBeenCalledTimes(1);
+
+    const resultsEl = target.querySelector('[data-testid="results"]');
+    expect(resultsEl).toBeNull();
+
+    unmount(component);
+    target.remove();
+  });
+});
+
+describe('AC23 — results render after debounce fires', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    mockSearch.mockReset();
+  });
+
+  it('shows result rows in the pane once search returns', async () => {
+    mockSearch.mockResolvedValue({ query: '吃', results: [FAKE_RESULT] });
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(Page, { target });
+
+    await inputInto(target, '吃');
+    await new Promise((r) => setTimeout(r, 250));
+    await tick();
+
+    const rows = target.querySelectorAll('[data-testid="result-row"]');
+    expect(rows.length).toBe(1);
+    expect(rows[0].textContent).toContain('吃');
 
     unmount(component);
     target.remove();

@@ -1,11 +1,53 @@
 <script lang="ts">
   import SearchBox from '$lib/components/SearchBox.svelte';
-
-  // T28 (AC22): default page renders a search box above the fold.
-  // T29 wires debounced search. T30 wires toggles/filters/results below the fold.
+  import ResultRow from '$lib/components/ResultRow.svelte';
+  import { search, type SearchResult } from '$lib/api';
 
   const PLACEHOLDER = 'Try: 看起来好吃 or 吃 or basic-verbs';
+  const DEBOUNCE_MS = 200;
+
   let query = '';
+  let results: SearchResult[] = [];
+  let loading = false;
+  let error: string | null = null;
+  let requestSeq = 0;
+
+  // AC23: debounce the search by 200ms after the user stops typing.
+  // Each input event resets the timer. Only the most recent value
+  // triggers a fetch, and stale responses (older requestSeq) are
+  // discarded so a slow earlier response can't overwrite a fast
+  // later one.
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  function onInput(e: CustomEvent<string>) {
+    query = e.detail;
+    if (timer !== null) clearTimeout(timer);
+    if (query.trim().length === 0) {
+      results = [];
+      loading = false;
+      error = null;
+      return;
+    }
+    timer = setTimeout(runSearch, DEBOUNCE_MS);
+  }
+
+  async function runSearch() {
+    const mySeq = ++requestSeq;
+    loading = true;
+    error = null;
+    try {
+      const resp = await search(query.trim());
+      // Drop stale responses (a newer keystroke already fired).
+      if (mySeq !== requestSeq) return;
+      results = resp.results;
+    } catch (e) {
+      if (mySeq !== requestSeq) return;
+      error = e instanceof Error ? e.message : String(e);
+      results = [];
+    } finally {
+      if (mySeq === requestSeq) loading = false;
+    }
+  }
 </script>
 
 <svelte:head>
@@ -19,7 +61,7 @@
   </header>
 
   <div class="search-row">
-    <SearchBox placeholder={PLACEHOLDER} bind:value={query} />
+    <SearchBox placeholder={PLACEHOLDER} value={query} on:input={onInput} />
   </div>
 
   <nav class="add-link-row" aria-label="Primary">
@@ -27,20 +69,26 @@
   </nav>
 </div>
 
-<!-- Below-the-fold placeholders for T29/T30/T31/T32/T33.
-     AC22 only requires the search box above the fold; these are
-     stubs that live below it so the page is the single source of
-     truth for the UI brick. -->
-<section class="below-fold" aria-label="Coming in T29–T33">
-  <p class="placeholder-note">Results, toggles, filters, and detail views land in T29–T33.</p>
+<!-- Results pane (below the fold per AC22). Empty state is silent —
+     the user only sees results once they type something. -->
+<section class="results-pane" aria-label="Search results">
+  {#if loading}
+    <p class="status">Searching…</p>
+  {:else if error}
+    <p class="status error" role="alert">{error}</p>
+  {:else if query.trim().length > 0 && results.length === 0}
+    <p class="status">No results for "{query.trim()}".</p>
+  {:else if results.length > 0}
+    <ol class="results" data-testid="results">
+      {#each results as r (r.id)}
+        <li><ResultRow result={r} /></li>
+      {/each}
+    </ol>
+  {/if}
 </section>
 
 <style>
   .hero {
-    /* Top-anchored bar layout (option B in design-t28.md):
-       the search box sits in the upper portion of the viewport,
-       with the bilingual wordmark above it and the "+ Add sentence"
-       link centered below it. Everything below is below-the-fold. */
     max-width: 720px;
     margin: 0 auto;
     padding: 14vh 24px 24px;
@@ -116,20 +164,28 @@
     text-decoration: underline;
   }
 
-  .below-fold {
-    /* Below-the-fold content lives inside the 720px column,
-       pushed down so it does not compete with the hero on a
-       standard viewport. */
+  .results-pane {
     max-width: 720px;
-    margin: 0 auto;
-    padding: 64px 24px 24px;
-    border-top: 1px solid var(--lb-border);
-    color: var(--lb-muted);
+    margin: 32px auto 64px;
+    padding: 0 24px;
   }
 
-  .placeholder-note {
-    margin: 0;
-    font-size: 13px;
+  .status {
+    color: var(--lb-muted);
+    font-size: 14px;
     text-align: center;
+    margin: 0;
+    padding: 16px 0;
+  }
+
+  .status.error {
+    color: #b91c1c;
+  }
+
+  .results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border-top: 1px solid var(--lb-border);
   }
 </style>

@@ -9,6 +9,7 @@ scaffolding.
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from api.config import configure_root_logger, settings
 from api.routes import add_sentence as add_sentence_route
@@ -24,6 +25,25 @@ app = FastAPI(
         "Local-first knowledge graph of Chinese language units. "
         "See .specs/language-brain.md for the full design."
     ),
+)
+
+# CORS for the SvelteKit dev server (B6 — UI brick). The frontend
+# runs on http://localhost:5173 (vite default) during development;
+# in production the frontend is served from the same origin as the
+# API, so this middleware is a no-op. We allow a small set of local
+# dev origins explicitly — ``allow_origins=["*"]`` is intentionally
+# not used so the production posture is not accidentally widened.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:4173",  # vite preview
+        "http://127.0.0.1:4173",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 # T7: register the propose-labels route. T19 adds the commit-sentence
