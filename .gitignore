@@ -19,3 +19,8 @@ vault/units/**/*.json
 .coverage
 .DS_Store
 *.log
+
+# Playwright MCP runtime / screenshots (design docs in .specs/design-*.md
+# are the canonical design-review artifacts; PNGs are local-only).
+.playwright-mcp/
+.specs/screenshots/

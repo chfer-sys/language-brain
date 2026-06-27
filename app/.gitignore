@@ -1,0 +1,11 @@
+.svelte-kit/
+node_modules/
+*.log
+
+# Playwright MCP screenshots (kept out of git; design-t28.md is the
+# canonical artifact for the T28 design review).
+.playwright-mcp/
+.specs/screenshots/
+
+# OS / editor
+.DS_Store

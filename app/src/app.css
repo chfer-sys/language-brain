@@ -1,0 +1,22 @@
+/* Minimal global reset and design tokens for Language Brain. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: var(--lb-fg);
+  background: var(--lb-bg);
+  line-height: 1.5;
+}
+
+:root {
+  --lb-fg: #1a1a1a;
+  --lb-bg: #ffffff;
+  --lb-muted: #6b6b6b;
+  --lb-accent: #2563eb;
+  --lb-border: #e5e7eb;
+}

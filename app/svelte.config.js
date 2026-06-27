@@ -1,4 +1,12 @@
-// Placeholder svelte.config.js — real config lands in T28.
-// SvelteKit is intentionally not installed yet; this file is here so the
-// repo tree already references the conventional name.
-export default {};
+import adapter from '@sveltejs/adapter-auto';
+import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
+
+/** @type {import('@sveltejs/kit').Config} */
+const config = {
+  preprocess: vitePreprocess(),
+  kit: {
+    adapter: adapter()
+  }
+};
+
+export default config;
