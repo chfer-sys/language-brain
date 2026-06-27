@@ -1,0 +1,215 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mount, unmount, tick } from 'svelte';
+
+const mockProposeLabels = vi.fn();
+const mockCommitSentence = vi.fn();
+
+vi.mock('$lib/api', () => ({
+  proposeLabels: (...args: unknown[]) => mockProposeLabels(...args),
+  commitSentence: (...args: unknown[]) => mockCommitSentence(...args),
+  suggest: vi.fn().mockResolvedValue([]),
+  search: vi.fn().mockResolvedValue({ query: '', results: [] }),
+  API_BASE: 'http://localhost:8000'
+}));
+
+// Import AFTER the mock so the page binds to the mocked functions.
+import AddPage from '../src/routes/add/+page.svelte';
+
+const FAKE_LABELS = {
+  pinyin: 'wǒ liú kǒu shuǐ le',
+  english: "I'm drooling",
+  meaning: 'visual craving: I see food and my mouth waters',
+  words: ['我', '流', '口水', '了'],
+  word_refs: ['wǒ', 'liú', 'kǒushuǐ', 'le'],
+  groups: [
+    { id: 'reactions', display_name: 'reactions', description: '' },
+    { id: 'food', display_name: 'food', description: '' }
+  ],
+  antonyms: []
+};
+
+async function setInputValue(target: HTMLElement, selector: string, value: string) {
+  const el = target.querySelector(selector) as HTMLInputElement | HTMLTextAreaElement;
+  el.value = value;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  await tick();
+}
+
+async function clickButton(target: HTMLElement, testid: string) {
+  const btn = target.querySelector(`[data-testid="${testid}"]`) as HTMLButtonElement;
+  btn.click();
+  await tick();
+}
+
+describe('AC25 — Add-sentence page propose-labels flow', () => {
+  beforeEach(() => {
+    mockProposeLabels.mockReset();
+    mockCommitSentence.mockReset();
+  });
+
+  it('renders the hanzi textarea, optional note, and Propose-labels button', () => {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    expect(target.querySelector('[data-testid="hanzi-input"]')).toBeTruthy();
+    expect(target.querySelector('[data-testid="propose-btn"]')).toBeTruthy();
+    expect(target.querySelector('input[type="text"]')).toBeTruthy();
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('disables the Propose button when hanzi is empty', async () => {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    const btn = target.querySelector('[data-testid="propose-btn"]') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我');
+    expect(btn.disabled).toBe(false);
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('calls proposeLabels and renders editable fields when the AI responds', async () => {
+    mockProposeLabels.mockResolvedValue(FAKE_LABELS);
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+
+    expect(mockProposeLabels).toHaveBeenCalledWith('我流口水了', '');
+    expect(target.querySelector('[data-testid="proposed-form"]')).toBeTruthy();
+
+    const pinyin = target.querySelector('[data-testid="pinyin-input"]') as HTMLInputElement;
+    expect(pinyin.value).toBe(FAKE_LABELS.pinyin);
+
+    // All seven editable fields populated.
+    const inputs = target.querySelectorAll('[data-testid="proposed-form"] input');
+    expect(inputs.length).toBe(7);
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('passes the English note to proposeLabels when the user typed one', async () => {
+    mockProposeLabels.mockResolvedValue(FAKE_LABELS);
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    // Second input is the English note (after hanzi textarea).
+    const noteInput = target.querySelectorAll('input[type="text"]')[0] as HTMLInputElement;
+    noteInput.value = 'drooling over food';
+    noteInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await tick();
+
+    await clickButton(target, 'propose-btn');
+    expect(mockProposeLabels).toHaveBeenCalledWith('我流口水了', 'drooling over food');
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('allows the user to edit proposed fields before saving', async () => {
+    mockProposeLabels.mockResolvedValue(FAKE_LABELS);
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+
+    // User edits the meaning field (third input in the proposed form).
+    const meaningInput = target.querySelectorAll('[data-testid="proposed-form"] input')[2] as HTMLInputElement;
+    meaningInput.value = 'user-edited meaning';
+    meaningInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await tick();
+
+    mockCommitSentence.mockResolvedValue({
+      id: 'wo-liu-kou-shui-le',
+      saved_at: '2026-06-27',
+      word_ids_created: [],
+      group_ids_created: []
+    });
+    await clickButton(target, 'save-btn');
+
+    expect(mockCommitSentence).toHaveBeenCalledTimes(1);
+    const body = mockCommitSentence.mock.calls[0][0] as Record<string, unknown>;
+    expect(body.meaning).toBe('user-edited meaning');
+    expect(body.pinyin).toBe(FAKE_LABELS.pinyin);
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('renders a Saved confirmation after commit succeeds', async () => {
+    mockProposeLabels.mockResolvedValue(FAKE_LABELS);
+    mockCommitSentence.mockResolvedValue({
+      id: 'wo-liu-kou-shui-le',
+      saved_at: '2026-06-27',
+      word_ids_created: [],
+      group_ids_created: []
+    });
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+    await clickButton(target, 'save-btn');
+
+    const saved = target.querySelector('[data-testid="saved"]');
+    expect(saved).toBeTruthy();
+    expect(saved?.textContent).toContain('wo-liu-kou-shui-le');
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('shows an error message if propose fails', async () => {
+    mockProposeLabels.mockRejectedValue(new Error('AI provider unavailable'));
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+    // Wait for the async propose to settle.
+    await new Promise((r) => setTimeout(r, 10));
+    await tick();
+
+    const errorEl = target.querySelector('.error');
+    expect(errorEl).toBeTruthy();
+    expect(errorEl?.textContent ?? '').toContain('AI provider unavailable');
+    // No proposed form should be rendered on failure.
+    expect(target.querySelector('[data-testid="proposed-form"]')).toBeNull();
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('returns a Back link to the home page', () => {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    const back = target.querySelector('a.back') as HTMLAnchorElement;
+    expect(back?.getAttribute('href')).toBe('/');
+
+    unmount(component);
+    target.remove();
+  });
+});
