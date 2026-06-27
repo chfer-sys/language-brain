@@ -63,12 +63,13 @@ import logging
 from fastapi import APIRouter, Query
 
 from api.config import settings
-from api.schemas import SearchResponse, SearchResultItem
+from api.schemas import SearchResponse, SearchResultItem, SuggestResponse
 from api.services.search import (
     SearchHit,
     lexical_search,
     merge_hits_with_kinds,
     semantic_search,
+    suggest_units,
 )
 
 log = logging.getLogger(__name__)
@@ -136,6 +137,108 @@ def _hit_to_item(hit: SearchHit, kinds: list[str]) -> SearchResultItem:
 # ---------------------------------------------------------------------------
 # Route
 # ---------------------------------------------------------------------------
+
+
+@router.get("/search/suggest", response_model=SuggestResponse)
+def suggest(
+    q: str = Query(
+        ...,
+        min_length=1,
+        description=(
+            "The prefix to autocomplete. Must be non-empty after "
+            "the route's whitespace strip; whitespace-only input "
+            "returns 422."
+        ),
+    ),
+    limit: int = Query(default=5, ge=1, le=20),
+    types: str | None = Query(
+        default=None,
+        description=(
+            "Comma-separated unit types to include. Default: "
+            "sentence,word,group. Valid values: sentence, word, group."
+        ),
+    ),
+) -> SuggestResponse:
+    """GET /api/search/suggest — autocomplete unit names (T26).
+
+    Implements SPEC §5.3's autocomplete endpoint and satisfies
+    SPEC §6 AC27b. Returns up to ``limit`` (default 5, max 20)
+    unit names whose display string starts with ``q``, sorted
+    alphabetically. The response payload intentionally carries
+    no ``english`` or ``meaning`` keys (AC20/AC27b invariant).
+
+    Matching is prefix-based and case-insensitive:
+
+    * Sentence units match against ``properties.hanzi``.
+    * Word units match against ``properties.hanzi``.
+    * Group units match against ``properties.display_name``;
+      if that's empty, the match falls back to the slug id.
+
+    The response shape is::
+
+        {
+          "prefix": "<stripped input>",
+          "suggestions": [
+            {"id": "...", "type": "sentence|word|group", "name": "..."},
+            ...
+          ]
+        }
+
+    Errors
+    ------
+    * Missing ``q`` or ``q=""`` — FastAPI returns 422 via
+      ``min_length=1``.
+    * ``q`` containing only whitespace — the route strips it and
+      raises 422 (the stripped result is empty).
+    * ``limit`` outside ``[1, 20]`` — 422.
+    * Unknown ``types`` value — 422 (matches the main search
+      route's behavior).
+    """
+    stripped = q.strip()
+    if not stripped:
+        # The Query() validator only enforces min_length=1 on the
+        # raw string. A whitespace-only string passes that check
+        # but is meaningless to the suggester, so we reject it
+        # explicitly here rather than returning an empty list
+        # silently.
+        from fastapi import HTTPException, status
+
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="q must be non-empty after stripping whitespace",
+        )
+
+    parsed_types = _parse_csv(types)
+    if parsed_types is not None:
+        bad = [t for t in parsed_types if t not in _VALID_TYPES]
+        if bad:
+            from fastapi import HTTPException, status
+
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"unknown type(s): {bad}; valid types: "
+                    f"{sorted(_VALID_TYPES)}"
+                ),
+            )
+
+    vault_root = settings.vault
+    items = suggest_units(
+        vault_root,
+        prefix=stripped,
+        limit=limit,
+        types=parsed_types,
+    )
+
+    log.info(
+        "GET /api/search/suggest q=%r limit=%d types=%s returned=%d",
+        stripped,
+        limit,
+        parsed_types,
+        len(items),
+    )
+
+    return SuggestResponse(prefix=stripped, suggestions=items)  # type: ignore[arg-type]
 
 
 @router.get("/search", response_model=SearchResponse)

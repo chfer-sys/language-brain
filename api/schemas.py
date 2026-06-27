@@ -193,6 +193,47 @@ class SearchResponse(BaseModel):
     results: list[SearchResultItem]
 
 
+# ---------------------------------------------------------------------------
+# GET /api/search/suggest — autocomplete (T26, SPEC §5.3, §6 AC27b)
+# ---------------------------------------------------------------------------
+
+
+class SuggestionItem(BaseModel):
+    """One entry in a :class:`SuggestResponse`.
+
+    Fields mirror SPEC §5.3's autocomplete shape:
+
+    * ``id`` — the unit's stable id.
+    * ``type`` — one of ``"sentence"``, ``"word"``, or ``"group"``.
+    * ``name`` — the display string the user typed against.
+      For sentences and words, this is the unit's
+      ``properties.hanzi``; for groups, it is
+      ``properties.display_name`` (falling back to the slug id).
+
+    The item intentionally carries no ``english`` or ``meaning``
+    fields — that's the AC20/AC27b payload-hygiene invariant
+    enforced by :func:`api.services.search.has_english_or_meaning_key`.
+    """
+
+    id: str
+    type: str
+    name: str
+
+
+class SuggestResponse(BaseModel):
+    """Body of the suggest / autocomplete response (SPEC §5.3).
+
+    ``prefix`` echoes the (stripped) input prefix the caller
+    supplied, so the frontend can render "matches for X" without
+    bookkeeping. ``suggestions`` is the alphabetically-sorted
+    list of unit names whose display string starts with
+    ``prefix`` (case-insensitive). Empty prefix → ``[]``.
+    """
+
+    prefix: str
+    suggestions: list[SuggestionItem]
+
+
 __all__ = [
     "CommitSentenceRequest",
     "CommitSentenceResponse",
@@ -202,5 +243,7 @@ __all__ = [
     "ProposeSentencesResponse",
     "SearchResponse",
     "SearchResultItem",
+    "SuggestionItem",
+    "SuggestResponse",
     "UnitType",
 ]

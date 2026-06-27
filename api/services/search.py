@@ -844,6 +844,204 @@ def semantic_search(
 
 
 # ---------------------------------------------------------------------------
+# Autocomplete / suggest (T26 — SPEC §5.3, §6 AC27b)
+# ---------------------------------------------------------------------------
+
+
+#: Default limit for :func:`suggest_units`. Matches SPEC §5.3's
+#: ``GET /api/search/suggest?q=...&limit=5`` contract.
+_SUGGEST_DEFAULT_LIMIT: int = 5
+
+#: Hard cap on the ``limit`` parameter; the route clamps with
+#: Pydantic's ``le=20`` and the service clamps again defensively.
+_SUGGEST_MAX_LIMIT: int = 20
+
+
+def suggest_units(
+    vault_root: str,
+    prefix: str,
+    limit: int = _SUGGEST_DEFAULT_LIMIT,
+    types: list[str] | None = None,
+) -> list[dict]:
+    """Return up to ``limit`` unit names that start with ``prefix``.
+
+    Implements SPEC §5.3's autocomplete endpoint and satisfies
+    SPEC §6 AC27b (``<=5`` unit-name matches, no ``english`` or
+    ``meaning`` keys in the response payload).
+
+    Each returned entry is ``{"id": str, "type": "sentence" |
+    "word" | "group", "name": str}``. The ``name`` field is the
+    unit's display string:
+
+    * For sentences and words, ``name`` is the unit's
+      ``properties.hanzi``.
+    * For groups, ``name`` is the unit's
+      ``properties.display_name``; if that's empty, ``name`` falls
+      back to the slug id.
+
+    Matching
+    --------
+    The function compares the lowercased ``prefix`` against the
+    lowercased display string for each unit and keeps every unit
+    whose display string starts with that prefix. This is *prefix*
+    matching, not substring — typing ``"Bas"`` matches
+    ``"Basic Verbs"`` but not ``"Verbs Basic"``. The match is
+    case-insensitive on both sides.
+
+    Sort & limit
+    ------------
+    Results are sorted alphabetically by ``name`` (lowercased
+    comparison for stability across scripts), then by ``id`` as a
+    tie-break. The function clamps ``limit`` to ``[1, 20]`` and
+    truncates the output list to ``limit`` entries.
+
+    ``types`` filter
+    ----------------
+    ``None`` (the default) means all three types — sentences,
+    words, and groups. Pass any subset of
+    ``{"sentence", "word", "group"}`` to restrict. An empty list
+    or a list containing a value outside the closed set returns
+    ``[]`` rather than raising — the route is responsible for
+    rejecting bad input with 422.
+
+    Parameters
+    ----------
+    vault_root:
+        Filesystem path to the vault root.
+    prefix:
+        The prefix to autocomplete. Empty / non-string / whitespace-
+        only input returns ``[]`` without touching disk.
+    limit:
+        Maximum number of suggestions to return. Clamped to
+        ``[1, 20]``. Default 5.
+    types:
+        Optional list of unit types to include. ``None`` means all
+        three; otherwise must be a subset of
+        ``{"sentence", "word", "group"}``.
+
+    Returns
+    -------
+    list[dict]
+        ``{"id", "type", "name"}`` dicts, alphabetically sorted by
+        ``name`` (then ``id``), capped at the clamped ``limit``.
+        Never contains ``english`` or ``meaning`` keys (AC20 / AC27b).
+    """
+    if not isinstance(prefix, str):
+        return []
+
+    # The route layer strips and re-validates; the service is
+    # defensive so callers that bypass the route (e.g. an
+    # internal indexer / CLI) still get safe behavior.
+    normalized = prefix.strip().lower()
+    if not normalized:
+        return []
+
+    # Clamp limit. Out-of-range ints collapse to the boundary,
+    # matching the SPEC's "no payload leak of english/meaning"
+    # posture: we silently fix a too-large/too-small limit rather
+    # than error, so a typo can't deny service.
+    try:
+        limit_int = int(limit)
+    except (TypeError, ValueError):
+        limit_int = _SUGGEST_DEFAULT_LIMIT
+    if limit_int < 1:
+        limit_int = 1
+    if limit_int > _SUGGEST_MAX_LIMIT:
+        limit_int = _SUGGEST_MAX_LIMIT
+
+    # ``types`` validation mirrors :func:`lexical_search`: an
+    # empty list or a list with any non-closed-set value returns
+    # ``[]`` rather than silently producing partial results.
+    selected: set[str]
+    if types is None:
+        selected = {"sentence", "word", "group"}
+    elif isinstance(types, list) and types:
+        if any(not isinstance(t, str) for t in types):
+            return []
+        if any(t not in _LEXICAL_TYPES for t in types):
+            return []
+        selected = set(types)
+    else:
+        return []
+
+    include_sentences = "sentence" in selected
+    include_words = "word" in selected
+    include_groups = "group" in selected
+
+    out: list[tuple[str, str, str]] = []  # (sort_name, id, type)
+
+    if include_sentences:
+        for unit in list_units_by_type(vault_root, "sentence"):
+            if not isinstance(unit, dict):
+                continue
+            uid = unit.get("id")
+            if not isinstance(uid, str) or not uid:
+                continue
+            properties = unit.get("properties")
+            hanzi = properties.get("hanzi") if isinstance(properties, dict) else None
+            if not isinstance(hanzi, str) or not hanzi:
+                continue
+            if hanzi.lower().startswith(normalized):
+                out.append((hanzi, uid, "sentence"))
+
+    if include_words:
+        for unit in list_units_by_type(vault_root, "word"):
+            if not isinstance(unit, dict):
+                continue
+            uid = unit.get("id")
+            if not isinstance(uid, str) or not uid:
+                continue
+            properties = unit.get("properties")
+            hanzi = properties.get("hanzi") if isinstance(properties, dict) else None
+            if not isinstance(hanzi, str) or not hanzi:
+                continue
+            if hanzi.lower().startswith(normalized):
+                out.append((hanzi, uid, "word"))
+
+    if include_groups:
+        for unit in list_units_by_type(vault_root, "group"):
+            if not isinstance(unit, dict):
+                continue
+            uid = unit.get("id")
+            if not isinstance(uid, str) or not uid:
+                continue
+            properties = unit.get("properties")
+            display_name = ""
+            if isinstance(properties, dict):
+                raw_dn = properties.get("display_name")
+                if isinstance(raw_dn, str):
+                    display_name = raw_dn
+            # Match against display_name first; fall back to the
+            # slug id when display_name is empty so groups without
+            # a human label still autocomplete against their id.
+            match_target = display_name if display_name else uid
+            if not match_target:
+                continue
+            if match_target.lower().startswith(normalized):
+                out.append((display_name if display_name else uid, uid, "group"))
+
+    # Sort alphabetically by name (lowercased so ASCII and CJK
+    # scripts both compare stably). Tie-break by id, then type, so
+    # the response order is fully deterministic across calls.
+    out.sort(key=lambda entry: (entry[0].lower(), entry[1], entry[2]))
+
+    trimmed = out[:limit_int]
+
+    log.info(
+        "suggest_units prefix=%r limit=%d types=%s hits=%d",
+        prefix,
+        limit_int,
+        sorted(selected),
+        len(trimmed),
+    )
+
+    return [
+        {"id": uid, "type": unit_type, "name": name}
+        for name, uid, unit_type in trimmed
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Hit merger (T21 — supports future kinds toggle T22)
 # ---------------------------------------------------------------------------
 
@@ -959,4 +1157,5 @@ __all__ = [
     "merge_hits",
     "merge_hits_with_kinds",
     "semantic_search",
+    "suggest_units",
 ]
