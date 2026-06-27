@@ -481,3 +481,97 @@ def test_commit_idempotent(client: TestClient, tmp_path: Path) -> None:
     # The group has exactly one member (the sentence), not two.
     food = read_unit(str(tmp_path), "group", "food")
     assert food["properties"]["members"].count("wo-xihuan-chi") == 1
+
+
+# ---------------------------------------------------------------------------
+# AC8b — POST /api/sentences/commit is synchronous
+# ---------------------------------------------------------------------------
+
+
+def test_commit_all_side_effects_complete_before_response(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """AC8b: the response is returned only after every side effect
+    has completed.
+
+    A single commit must, by the time the HTTP response returns:
+
+      1. Have written the sentence unit file to disk.
+      2. Have created (or updated) the word units referenced by
+         the sentence's ``word_refs`` and ``words`` lists.
+      3. Have added the sentence to every proposed group's members
+         list.
+      4. Have run the connection-update script — at minimum, the
+         word units must carry a lexical connection to the new
+         sentence.
+      5. Have added a vector to the FAISS index for the sentence's
+         ``meaning`` field.
+
+    Each side effect is independently exercised by the tests above;
+    this test asserts the combined contract by inspecting all five
+    state surfaces immediately after the response, with no
+    ``sleep``, ``await``, or background-polling.
+
+    Locked SPEC §6 AC8b / OQ4: ``POST /api/sentences/commit`` is
+    synchronous. A future refactor that defers any of these side
+    effects to a background queue would break this test.
+    """
+    payload = _minimal_payload(
+        id="wo-xihuan-chi",
+        hanzi="我喜欢吃",
+        pinyin="wǒ xǐhuān chī",
+        english="I like to eat",
+        meaning="expressing enjoyment of eating",
+        words=["我", "喜欢", "吃"],
+        word_refs=["wǒ", "xǐhuān", "chī"],
+        groups=["food", "preferences"],
+        antonyms=[],
+    )
+
+    resp = client.post("/api/sentences/commit", json=payload)
+
+    # The response returns 200 only after all side effects.
+    assert resp.status_code == 200, resp.text
+
+    # 1. Sentence unit file is on disk.
+    sentence_path = unit_path(str(tmp_path), "sentence", "wo-xihuan-chi")
+    assert sentence_path.is_file(), (
+        "AC8b violated: sentence unit file missing immediately after "
+        "the commit response returned."
+    )
+
+    # 2. Word units are created (one per word_refs entry).
+    for pinyin in ("wǒ", "xǐhuān", "chī"):
+        word_path = unit_path(str(tmp_path), "word", pinyin)
+        assert word_path.is_file(), (
+            f"AC8b violated: word unit '{pinyin}' missing immediately "
+            f"after the commit response returned."
+        )
+
+    # 3. Groups have the sentence in their members list.
+    for group_id in ("food", "preferences"):
+        group = read_unit(str(tmp_path), "group", group_id)
+        assert "wo-xihuan-chi" in group["properties"]["members"], (
+            f"AC8b violated: group '{group_id}' does not have the "
+            f"sentence in its members list."
+        )
+
+    # 4. Connection-update script ran: word units have a lexical
+    #    connection to the new sentence.
+    chi_word = read_unit(str(tmp_path), "word", "chī")
+    chi_edges = chi_word.get("connections", [])
+    assert any(
+        isinstance(e, dict) and e.get("to") == "wo-xihuan-chi" and e.get("kind") == "lexical"
+        for e in chi_edges
+    ), (
+        "AC8b violated: word 'chī' has no lexical connection to the "
+        "new sentence — connector did not run."
+    )
+
+    # 5. FAISS index contains a vector for the sentence's meaning.
+    index = Index.load_or_empty(str(tmp_path))
+    assert "wo-xihuan-chi" in index, (
+        "AC8b violated: FAISS index does not contain a vector for "
+        "the new sentence — embedder/indexer did not run."
+    )
+    assert len(index) == 1
