@@ -286,6 +286,89 @@ def test_parse_labels_json_not_an_object_raises() -> None:
         _parse_labels_json("[1, 2, 3]")
 
 
+def test_parse_labels_json_with_think_block() -> None:
+    """MiniMax-M2 models prepend a <think>...</think> reasoning block
+    before the JSON. The parser strips it transparently."""
+    inner = json.dumps(
+        {
+            "pinyin": "wǒ liú kǒushuǐ le",
+            "english": "I am drooling",
+            "meaning": "expressing mouth-watering craving",
+            "words": ["我", "流", "口水", "了"],
+            "word_refs": ["wǒ", "liú", "kǒushuǐ", "le"],
+            "groups": [{"id": "reactions", "display_name": "reactions"}],
+            "antonyms": [],
+        }
+    )
+    raw = "<think>The user wants labels for 我流口水了. Let me parse it carefully.</think>\n" + inner
+    out = _parse_labels_json(raw)
+    assert out.pinyin == "wǒ liú kǒushuǐ le"
+    assert out.words == ["我", "流", "口水", "了"]
+    assert out.word_refs == ["wǒ", "liú", "kǒushuǐ", "le"]
+
+
+def test_parse_labels_json_with_unterminated_think_block_raises() -> None:
+    """If the think block is unterminated (model got cut off), the
+    JSON parser surfaces a parse error. Better to fail loud than
+    silently drop the response."""
+    raw = "<think>still thinking...\n\npartial text no json"
+    with pytest.raises(ValueError, match="not valid JSON"):
+        _parse_labels_json(raw)
+
+
+def test_parse_labels_json_with_rich_word_objects() -> None:
+    """Some models return words as objects instead of bare strings.
+    The parser extracts the 'word' field."""
+    raw = json.dumps(
+        {
+            "pinyin": "p",
+            "english": "e",
+            "meaning": "m",
+            "words": [
+                {"word": "我", "pinyin": "wǒ", "pos": "pronoun"},
+                {"word": "吃", "pinyin": "chī", "pos": "verb"},
+            ],
+            "word_refs": [
+                {"id": "wǒ", "reference": "现代汉语词典: wǒ"},
+                {"id": "chī", "reference": "现代汉语词典: chī"},
+            ],
+            "groups": [{"group": "subject", "members": ["我"]}],
+            "antonyms": [{"word": "我", "antonym": "你"}],
+        }
+    )
+    out = _parse_labels_json(raw)
+    assert out.words == ["我", "吃"]
+    assert out.word_refs == ["wǒ", "chī"]
+    assert out.antonyms == ["你"]
+    # Group with no 'id' key: derive a slug from 'group' field.
+    assert out.groups[0].id == "subject"
+
+
+def test_parse_labels_json_with_bare_string_groups() -> None:
+    """Some models return groups as bare strings instead of objects.
+    The parser derives a slug id from the string."""
+    raw = json.dumps(
+        {
+            "pinyin": "p",
+            "english": "e",
+            "meaning": "m",
+            "words": ["a"],
+            "word_refs": ["a"],
+            "groups": ["basic-verbs", "Food & Drink", "daily life"],
+            "antonyms": [],
+        }
+    )
+    out = _parse_labels_json(raw)
+    ids = [g.id for g in out.groups]
+    assert "basic-verbs" in ids
+    assert "food-drink" in ids
+    assert "daily-life" in ids
+    # Bare-string groups have empty display_name (matches existing
+    # contract for test_parse_labels_json_fenced).
+    for g in out.groups:
+        assert g.display_name == ""
+
+
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------

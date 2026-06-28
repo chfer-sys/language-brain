@@ -8,6 +8,11 @@ scaffolding.
 
 from __future__ import annotations
 
+# MUST come first: loads .env before api.config.settings is
+# constructed (otherwise the Settings lru_cache captures an empty
+# environment and the AI key is never seen).
+import api.bootstrap  # noqa: F401, E402
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

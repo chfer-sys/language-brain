@@ -290,14 +290,29 @@ class MockAIClient:
 def _parse_labels_json(content: str) -> ProposedLabels:
     """Parse the AI's JSON content into a :class:`ProposedLabels`.
 
-    Tolerates models that wrap the JSON in a ```json ... ``` fence.
+    Tolerant of three model behaviors observed in the wild:
+
+    1. **Markdown fence** — some models wrap JSON in ```` ```json ... ``` ````;
+       we strip the fence.
+    2. **Reasoning prefix** — some models (notably MiniMax-M2) prepend a
+       ``<think>...</think>`` block before the JSON. We strip the
+       entire ``<think>...</think>`` block (handling the case where
+       it has no closing tag gracefully).
+    3. **Rich object shapes** — some models return ``words: [{"word":
+       "我", "pinyin": "wǒ", ...}]`` instead of the schema's
+       ``words: ["我", ...]``. We normalize each entry to a string
+       by extracting the most semantically relevant field (the
+       ``word`` key for words/word_refs/antonyms, the ``id``+``display_name``
+       for groups).
+
     Raises :class:`ValueError` if the content is not parseable, or
-    if any required key is missing.
+    if any required key is missing after normalization.
     """
     if not isinstance(content, str):
         raise ValueError("AI content must be a string")
 
     text = content.strip()
+
     # Strip a leading ```json fence if present.
     if text.startswith("```"):
         text = text.strip("`")
@@ -305,6 +320,41 @@ def _parse_labels_json(content: str) -> ProposedLabels:
         if text.lower().startswith("json"):
             text = text[4:]
         text = text.strip()
+
+    # Strip reasoning blocks. Some models (MiniMax-M2) prepend a
+    # <think>...</think> section. We remove the entire block. If the
+    # block is unterminated (model got cut off mid-reasoning), we
+    # fall through and let the JSON parser raise — it's better to
+    # surface a parse error than silently lose the response.
+    import re
+
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+    # If the response is still not pure JSON (e.g. the model wrapped
+    # the JSON in prose), try to find the first balanced { ... } block.
+    if not text.startswith("{"):
+        start = text.find("{")
+        if start == -1:
+            # Not even a '{' in the response — fall through to the
+            # json.loads below which will raise JSONDecodeError, then
+            # we surface the standard "not valid JSON" message.
+            pass
+        else:
+            # Walk braces to find the matching close.
+            depth = 0
+            end = -1
+            for i in range(start, len(text)):
+                ch = text[i]
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            if end == -1:
+                raise ValueError("AI content is not valid JSON: unbalanced braces")
+            text = text[start:end]
 
     try:
         data = json.loads(text)
@@ -319,45 +369,110 @@ def _parse_labels_json(content: str) -> ProposedLabels:
     if missing:
         raise ValueError(f"AI response missing required keys: {missing}")
 
+    # Normalize each list field. Each entry may be either a bare
+    # string (the schema's expected shape) or an object (the rich
+    # shape some models return). We extract the most semantically
+    # relevant field per entry.
+    def _coerce_string(entry: object, *preferred_keys: str) -> str:
+        if isinstance(entry, str):
+            return entry
+        if isinstance(entry, dict):
+            for key in preferred_keys:
+                val = entry.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val
+            # Fall back to the first string value in the dict.
+            for val in entry.values():
+                if isinstance(val, str) and val.strip():
+                    return val
+            return ""
+        return str(entry)
+
+    def _coerce_string_list(field_name: str, *preferred_keys: str) -> list[str]:
+        raw = data[field_name]
+        if not isinstance(raw, list):
+            raise ValueError(f"'{field_name}' must be a list")
+        out: list[str] = []
+        for entry in raw:
+            s = _coerce_string(entry, *preferred_keys)
+            if s:
+                out.append(s)
+        return out
+
+    words = _coerce_string_list("words", "word", "hanzi", "token")
+    word_refs = _coerce_string_list("word_refs", "id", "ref", "pinyin", "word")
+    antonyms = _coerce_string_list("antonyms", "antonym", "word", "id")
+
     groups_raw = data["groups"]
     if not isinstance(groups_raw, list):
         raise ValueError("'groups' must be a list")
 
+    def _slugify(s: str) -> str:
+        """Convert a free-form name into a slug id.
+
+        Lowercase, spaces → hyphens, drop non-alphanumeric (except
+        hyphens), then collapse runs of hyphens.
+        """
+        out = s.lower().strip().replace(" ", "-")
+        out = "".join(c for c in out if c.isalnum() or c == "-")
+        # Collapse consecutive hyphens.
+        while "--" in out:
+            out = out.replace("--", "-")
+        return out.strip("-")
+
     groups: list[ProposedGroup] = []
     for g in groups_raw:
+        if isinstance(g, str):
+            # Bare-string group: derive a slug id from the name. We
+            # do NOT auto-populate display_name (it stays empty when
+            # the model only gave us a bare string) to preserve the
+            # existing contract that bare-string entries produce
+            # empty-string display_name.
+            slug = _slugify(g)
+            if not slug:
+                continue
+            groups.append(
+                ProposedGroup(id=slug, display_name="", description="")
+            )
+            continue
         if not isinstance(g, dict):
-            raise ValueError("each group must be an object")
-        gid = g.get("id")
-        if not isinstance(gid, str) or not gid:
-            raise ValueError("each group must have a non-empty string 'id'")
+            continue
+        # Look for the id under several common keys (different models
+        # use different field names). The first non-empty wins.
+        gid = None
+        for key in ("id", "name", "group", "slug", "display_name"):
+            v = g.get(key)
+            if isinstance(v, str) and v.strip():
+                gid = v
+                break
+        if gid is None:
+            continue
+        clean_id = _slugify(gid)
+        if not clean_id:
+            continue
+        # display_name: prefer the original 'display_name' key if it
+        # looks like a name (not the id), otherwise fall back to the
+        # pre-slugify gid.
+        display_name = str(g.get("display_name") or "").strip()
+        if not display_name:
+            # Try 'name' as a friendlier display_name source.
+            display_name = str(g.get("name") or "").strip()
         groups.append(
             ProposedGroup(
-                id=gid,
-                display_name=str(g.get("display_name", "") or ""),
-                description=str(g.get("description", "") or ""),
+                id=clean_id,
+                display_name=display_name,
+                description=str(g.get("description") or "").strip(),
             )
         )
 
-    words = data["words"]
-    if not isinstance(words, list) or not all(isinstance(w, str) for w in words):
-        raise ValueError("'words' must be a list of strings")
-
-    word_refs = data["word_refs"]
-    if not isinstance(word_refs, list) or not all(isinstance(w, str) for w in word_refs):
-        raise ValueError("'word_refs' must be a list of strings")
-
-    antonyms = data["antonyms"]
-    if not isinstance(antonyms, list) or not all(isinstance(a, str) for a in antonyms):
-        raise ValueError("'antonyms' must be a list of strings")
-
     return ProposedLabels(
-        pinyin=str(data["pinyin"]),
-        english=str(data["english"]),
-        meaning=str(data["meaning"]),
-        words=list(words),
-        word_refs=list(word_refs),
+        pinyin=str(data["pinyin"]).strip(),
+        english=str(data["english"]).strip(),
+        meaning=str(data["meaning"]).strip(),
+        words=words,
+        word_refs=word_refs,
         groups=groups,
-        antonyms=list(antonyms),
+        antonyms=antonyms,
     )
 
 
