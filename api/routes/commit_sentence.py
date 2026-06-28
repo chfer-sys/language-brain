@@ -114,6 +114,7 @@ from api.services.group_helpers import ensure_groups_from_proposed
 from api.services.group_registry import add_member_to_group
 from api.services.indexer import Index
 from api.services.lexical import add_lexical_edge_to_word
+from api.services.segmenter import lcut as segmenter_lcut
 from api.services.unit_writer import read_unit, unit_path, write_unit
 from api.services.word_registry import ensure_word_unit
 
@@ -196,6 +197,76 @@ def _pair_word_refs_with_hanzi(
     return [""] * len(word_refs)
 
 
+def _resolve_segmentation(
+    hanzi: str,
+    ai_words: list[str],
+    ai_word_refs: list[str],
+) -> tuple[list[str], list[str]]:
+    """Reconcile the AI's segmentation with the user-curated segmenter.
+
+    The user-curated jieba dictionary (see ``api/services/segmenter.py``)
+    is the authority for *which tokens* make up the sentence — it's
+    deterministic, the user has curated it for compounds like 受不了 that
+    the AI might mis-segment, and re-running it on commit guarantees the
+    on-disk ``words[]`` is consistent across re-saves.
+
+    The AI's ``word_refs[]`` is the authority for *which pinyin* each
+    token maps to — the AI has contextual tone disambiguation that
+    pypinyin does not (e.g. 了 = ``liǎo`` in 了解 vs ``le`` in 吃了).
+
+    Returns the final ``(words, word_refs)`` to persist. Three cases:
+
+    1. **AI agrees with jieba.** Both lists have matching lengths. Pass
+       through unchanged.
+    2. **AI disagrees with jieba.** The AI's ``word_refs[]`` length
+       doesn't match jieba's ``words[]`` length. We trust jieba for
+       the segmentation but keep the AI's pinyin for tokens it did
+       match positionally; for the rest we fall back to deriving pinyin
+       from pypinyin.
+    3. **AI provides nothing usable.** Empty AI lists → derive both
+       from jieba + pypinyin.
+    """
+    from pypinyin import Style, lazy_pinyin
+
+    jieba_words = segmenter_lcut(hanzi)
+    jieba_pinyin = lazy_pinyin(jieba_words, style=Style.TONE)
+
+    if not ai_words or not ai_word_refs:
+        # Case 3: no AI segmentation. Derive both from scratch.
+        return jieba_words, jieba_pinyin
+
+    if len(ai_words) == len(jieba_words) == len(ai_word_refs):
+        # Case 1: perfect alignment.
+        return jieba_words, list(ai_word_refs)
+
+    # Case 2: mismatch. Try to align positionally — match each jieba
+    # word against the AI's word_refs by hanzi equality at the same
+    # position. For tokens where the AI's segmentation differs, we
+    # take the AI's pinyin only if the hanzi matches; otherwise we
+    # derive from pypinyin.
+    final_pinyin: list[str] = []
+    ai_idx = 0
+    for word in jieba_words:
+        if ai_idx < len(ai_word_refs) and ai_idx < len(ai_words):
+            ai_w = ai_words[ai_idx]
+            ai_p = ai_word_refs[ai_idx]
+            if ai_w == word and ai_p.strip():
+                # AI's segmentation matched this token. Use its pinyin.
+                final_pinyin.append(ai_p)
+                ai_idx += 1
+                continue
+        # Fallback: derive from pypinyin.
+        # Find the next unused jieba_pinyin entry (they pair 1:1).
+        if ai_idx < len(jieba_pinyin):
+            final_pinyin.append(jieba_pinyin[ai_idx])
+            ai_idx += 1
+        else:
+            # Shouldn't happen, but stay defensive.
+            final_pinyin.append(lazy_pinyin(word, style=Style.TONE)[0])
+
+    return jieba_words, final_pinyin
+
+
 # ---------------------------------------------------------------------------
 # Route
 # ---------------------------------------------------------------------------
@@ -247,6 +318,15 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
     # ------------------------------------------------------------------
     # Step 1 — write the sentence unit
     # ------------------------------------------------------------------
+    # Reconcile the AI's segmentation with the user-curated segmenter
+    # (see ``_resolve_segmentation``). The segmenter is the authority
+    # for which tokens make up the sentence; the AI's word_refs is
+    # the authority for which pinyin maps to each token (because the
+    # AI has contextual tone disambiguation, e.g. 了 = ``liǎo`` in 了解).
+    words, word_refs = _resolve_segmentation(
+        hanzi, list(body.words), list(body.word_refs)
+    )
+
     sentence_unit: dict[str, Any] = {
         "id": sentence_id,
         "type": "sentence",
@@ -256,8 +336,8 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
             "pinyin": pinyin,
             "english": body.english,
             "meaning": body.meaning,
-            "words": list(body.words),
-            "word_refs": list(body.word_refs),
+            "words": list(words),
+            "word_refs": list(word_refs),
             # The sentence unit stores groups as bare slug strings so
             # the on-disk shape matches the test fixtures and the
             # connector's defensive readers don't have to handle a
@@ -278,8 +358,8 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
     # ------------------------------------------------------------------
     # Step 2 — ensure each referenced word has a unit file (AC2)
     # ------------------------------------------------------------------
-    paired_hanzi = _pair_word_refs_with_hanzi(body.word_refs, body.words)
-    for pinyin_ref, word_hanzi in zip(body.word_refs, paired_hanzi):
+    paired_hanzi = _pair_word_refs_with_hanzi(word_refs, words)
+    for pinyin_ref, word_hanzi in zip(word_refs, paired_hanzi):
         # Skip empty / whitespace pinyin defensively. The schema
         # allows zero-length entries via the default_factory, and
         # a stray blank here would fail ensure_word_unit's
@@ -297,7 +377,7 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
     # ------------------------------------------------------------------
     # Step 3 — add lexical edges from each word to the sentence (AC3)
     # ------------------------------------------------------------------
-    for pinyin_ref in body.word_refs:
+    for pinyin_ref in word_refs:
         if not isinstance(pinyin_ref, str) or not pinyin_ref.strip():
             continue
         try:
@@ -341,7 +421,7 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
     # connector's pure algorithmic layer. The connector stays
     # focused on inferring edges from existing state.
     # ------------------------------------------------------------------
-    for pinyin_ref in body.word_refs:
+    for pinyin_ref in word_refs:
         if not isinstance(pinyin_ref, str) or not pinyin_ref.strip():
             continue
         for antonym_id in body.antonyms:

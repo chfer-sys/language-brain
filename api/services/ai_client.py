@@ -130,8 +130,25 @@ _SYSTEM_PROMPT: str = (
     '  "word_refs": list of tone-marked pinyin, one per entry in "words"\n'
     '  "groups": list of { "id": slug, "display_name": human, '
     '"description": short } — topic categories the sentence belongs to\n'
-    '  "antonyms": list of pinyin (with tones) for any word in this '
-    "sentence whose opposite is also a word the user likely knows\n"
+    '  "antonyms": list of HAZI characters that are antonyms of any '
+    "word in this sentence. Use hanzi (e.g. 饱, 热), NOT pinyin. "
+    "Only include antonyms the user would plausibly already know.\n"
+    "\n"
+    "SEGMENTATION RULES (your words[] must match these):\n"
+    "1. Treat the following compounds as SINGLE words (do not split):\n"
+    "   - Verbs with 了-complement: 受不了, 了解, 了不起, 得到, 觉得, "
+    "感到, 学会, 记得, 遇见, 想到, 发现\n"
+    "   - Function-word compounds: 为了, 除了, 罢了, 得了\n"
+    "   - High-frequency words: 可以, 没有, 什么, 怎么, 为什么, 因为, "
+    "所以, 但是, 现在, 今天, 明天, 昨天, 时候, 意思, 问题, 喜欢, 知道\n"
+    "2. The character 了 is POLYSEMOUS:\n"
+    "   - 'liǎo' (3rd tone, complement) in compounds like 受不了, 了解, "
+    "了不起 — keep these as single tokens\n"
+    "   - 'le' (neutral tone, aspect particle) in sentence-final "
+    "positions like 吃了, 走了 — split off as its own token\n"
+    "3. Match the lengths of `words` and `word_refs`. Each entry in "
+    "words is one hanzi token; the matching entry in word_refs is "
+    "the tone-marked pinyin for that entire token.\n"
     "\n"
     "Never include prose outside the JSON. Never echo the prompt. "
     "Never include the user's note in the response. Never set "
