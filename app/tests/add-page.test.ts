@@ -9,6 +9,7 @@ vi.mock('$lib/api', () => ({
   commitSentence: (...args: unknown[]) => mockCommitSentence(...args),
   suggest: vi.fn().mockResolvedValue([]),
   search: vi.fn().mockResolvedValue({ query: '', results: [] }),
+  getUnit: vi.fn().mockResolvedValue(null),
   API_BASE: 'http://localhost:8000'
 }));
 
@@ -211,5 +212,133 @@ describe('AC25 — Add-sentence page propose-labels flow', () => {
 
     unmount(component);
     target.remove();
+  });
+
+  // ---------------------------------------------------------------------
+  // T2 (Note 3): Antonym chip editor — bare hanzi, not pinyin
+  // ---------------------------------------------------------------------
+
+  it('renders the antonyms field as a chip editor, not a CSV text input', async () => {
+    mockProposeLabels.mockResolvedValue(FAKE_LABELS);
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+
+    expect(target.querySelector('[data-testid="antonyms-editor"]')).toBeTruthy();
+    expect(target.querySelector('[data-testid="antonyms-input"]')).toBeTruthy();
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('seeds the chip editor from the AI\'s proposed antonym hanzi', async () => {
+    mockProposeLabels.mockResolvedValue({
+      ...FAKE_LABELS,
+      antonyms: ['饱', '热']
+    });
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+
+    expect(target.querySelector('[data-testid="antonyms-chip-饱"]')).toBeTruthy();
+    expect(target.querySelector('[data-testid="antonyms-chip-热"]')).toBeTruthy();
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('lets the user add an antonym chip by typing + Enter', async () => {
+    mockProposeLabels.mockResolvedValue(FAKE_LABELS);
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+
+    const chipInput = target.querySelector('[data-testid="antonyms-input"]') as HTMLInputElement;
+    chipInput.value = '冷';
+    chipInput.dispatchEvent(new Event('input', { bubbles: true }));
+    chipInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await tick();
+
+    expect(target.querySelector('[data-testid="antonyms-chip-冷"]')).toBeTruthy();
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('lets the user remove an antonym chip by clicking its × button', async () => {
+    mockProposeLabels.mockResolvedValue({
+      ...FAKE_LABELS,
+      antonyms: ['饱', '热']
+    });
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+
+    expect(target.querySelector('[data-testid="antonyms-chip-饱"]')).toBeTruthy();
+
+    const chip = target.querySelector('[data-testid="antonyms-chip-饱"]') as HTMLElement;
+    const removeBtn = chip.querySelector('button.chip-remove') as HTMLButtonElement;
+    removeBtn.click();
+    await tick();
+
+    expect(target.querySelector('[data-testid="antonyms-chip-饱"]')).toBeNull();
+    expect(target.querySelector('[data-testid="antonyms-chip-热"]')).toBeTruthy();
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('sends the edited antonym chips (hanzi) to commitSentence', async () => {
+    mockProposeLabels.mockResolvedValue({ ...FAKE_LABELS, antonyms: ['饱', '热'] });
+    mockCommitSentence.mockResolvedValue({
+      id: 'wo-liu-kou-shui-le',
+      saved_at: '2026-06-27',
+      word_ids_created: [],
+      group_ids_created: []
+    });
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+
+    const chipInput = target.querySelector('[data-testid="antonyms-input"]') as HTMLInputElement;
+    chipInput.value = '冷';
+    chipInput.dispatchEvent(new Event('input', { bubbles: true }));
+    chipInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await tick();
+
+    const removeBtn = (
+      target.querySelector('[data-testid="antonyms-chip-热"]') as HTMLElement
+    ).querySelector('button.chip-remove') as HTMLButtonElement;
+    removeBtn.click();
+    await tick();
+
+    await clickButton(target, 'save-btn');
+
+    expect(mockCommitSentence).toHaveBeenCalledTimes(1);
+    const body = mockCommitSentence.mock.calls[0][0] as Record<string, unknown>;
+    const sent = body.antonyms as string[];
+    expect(sent).toContain('饱');
+    expect(sent).toContain('冷');
+    expect(sent).not.toContain('热');
   });
 });

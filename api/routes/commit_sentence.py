@@ -109,6 +109,10 @@ from api.schemas import (
     ProposedGroupOut,
 )
 from api.services.connector import compute_connections
+from api.services.antonym_resolver import (
+    normalize_antonyms_for_storage,
+    resolve_antonym_to_word_id,
+)
 from api.services.embedder import Embedder, get_embedder
 from api.services.group_helpers import ensure_groups_from_proposed
 from api.services.group_registry import add_member_to_group
@@ -346,7 +350,13 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
                 g.id if isinstance(g, ProposedGroupOut) else g
                 for g in body.groups
             ],
-            "antonyms": list(body.antonyms),
+            # Antonyms are stored in the user's submitted form (hanzi
+            # preferred, pinyin accepted for backward compat — see
+            # api.services.antonym_resolver). The on-disk array is
+            # the user-facing label set; the wiring into the
+            # connector's opposite edge uses the resolved word-unit
+            # ids below.
+            "antonyms": normalize_antonyms_for_storage(list(body.antonyms)),
         },
         "connections": [],
         "created": today,
@@ -421,11 +431,32 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
     # connector's pure algorithmic layer. The connector stays
     # focused on inferring edges from existing state.
     # ------------------------------------------------------------------
+    # Pre-load word units once so the hanzi resolver doesn't do a
+    # disk scan per antonym entry.
+    from api.services.word_registry import list_all_words
+
+    existing_word_units = list_all_words(vault_root)
+
     for pinyin_ref in word_refs:
         if not isinstance(pinyin_ref, str) or not pinyin_ref.strip():
             continue
-        for antonym_id in body.antonyms:
-            if not isinstance(antonym_id, str) or not antonym_id.strip():
+        for antonym_entry in body.antonyms:
+            if not isinstance(antonym_entry, str) or not antonym_entry.strip():
+                continue
+            # Resolve the entry — hanzi ("饱") or pinyin ("bǎo") — to
+            # the actual word-unit id. Hanzi entries trigger a
+            # properties.hanzi lookup and a fresh-word create if no
+            # match; pinyin entries pass through unchanged (and the
+            # unknown-target skip below remains the v0.3 behavior).
+            try:
+                antonym_id = resolve_antonym_to_word_id(
+                    vault_root,
+                    antonym_entry.strip(),
+                    existing_word_units=existing_word_units,
+                )
+            except ValueError:
+                # Blank entry — defensive, shouldn't happen given the
+                # strip() check above.
                 continue
             if antonym_id == pinyin_ref:
                 # Self-loop guard. A word can't be its own antonym.

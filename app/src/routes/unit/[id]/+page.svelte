@@ -52,15 +52,45 @@
     return out;
   })();
 
-  function topProps(u: UnitDetail): { key: string; value: unknown }[] {
+  function topProps(u: UnitDetail): { key: string; value: unknown; renderAs?: 'chips' | 'csv' }[] {
     const p = u.properties;
-    const known: string[] = [];
-    if (u.type === 'sentence') known.push('hanzi', 'pinyin', 'english', 'meaning', 'words', 'word_refs', 'groups', 'antonyms');
-    else if (u.type === 'word') known.push('hanzi', 'pinyin', 'english', 'meaning', 'groups', 'antonyms');
-    else if (u.type === 'group') known.push('display_name', 'description', 'members');
+    const known: { key: string; renderAs?: 'chips' | 'csv' }[] = [];
+    if (u.type === 'sentence') {
+      known.push(
+        { key: 'hanzi' },
+        { key: 'pinyin' },
+        { key: 'english' },
+        { key: 'meaning' },
+        { key: 'words', renderAs: 'csv' },
+        { key: 'word_refs', renderAs: 'csv' },
+        { key: 'groups', renderAs: 'csv' },
+        // Antonyms are bare hanzi characters per Note 3 / T2; render
+        // them as chips for visual scanability.
+        { key: 'antonyms', renderAs: 'chips' }
+      );
+    } else if (u.type === 'word') {
+      known.push(
+        { key: 'hanzi' },
+        { key: 'pinyin' },
+        { key: 'english' },
+        { key: 'meaning' },
+        { key: 'groups', renderAs: 'csv' },
+        { key: 'antonyms', renderAs: 'chips' }
+      );
+    } else if (u.type === 'group') {
+      known.push(
+        { key: 'display_name' },
+        { key: 'description' },
+        { key: 'members', renderAs: 'csv' }
+      );
+    }
     return known
-      .filter((k) => k in p)
-      .map((k) => ({ key: k, value: (p as Record<string, unknown>)[k] }));
+      .filter((k) => k.key in p)
+      .map((k) => ({
+        key: k.key,
+        renderAs: k.renderAs,
+        value: (p as Record<string, unknown>)[k.key]
+      }));
   }
 
   function formatValue(v: unknown): string {
@@ -91,9 +121,19 @@
     <section class="properties" data-testid="unit-properties">
       <h2>Properties</h2>
       <dl>
-        {#each topProps(unit) as { key, value } (key)}
+        {#each topProps(unit) as { key, value, renderAs } (key)}
           <dt>{key}</dt>
-          <dd>{formatValue(value)}</dd>
+          <dd>
+            {#if renderAs === 'chips' && Array.isArray(value)}
+              <span class="chips-readonly">
+                {#each value as chip (chip)}
+                  <span class="chip-readonly" data-testid="prop-antonym-chip-{chip}">{chip}</span>
+                {/each}
+              </span>
+            {:else}
+              {formatValue(value)}
+            {/if}
+          </dd>
         {/each}
       </dl>
     </section>
@@ -227,6 +267,22 @@
     margin: 0;
     color: var(--lb-fg);
     word-break: break-word;
+  }
+
+  .chips-readonly {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .chip-readonly {
+    display: inline-block;
+    padding: 2px 8px;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 999px;
+    font-size: 13px;
+    color: #1e3a8a;
   }
 
   .connections ul {

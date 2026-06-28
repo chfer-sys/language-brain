@@ -5,6 +5,7 @@
     type ProposedLabels,
     type ProposedGroup
   } from '$lib/api';
+  import AntonymChips from '$lib/components/AntonymChips.svelte';
 
   let hanzi = '';
   let note = '';
@@ -24,7 +25,9 @@
   let wordsCsv = '';
   let wordRefsCsv = '';
   let groupsCsv = '';
-  let antonymsCsv = '';
+  // Antonyms is a string[] of bare hanzi (Note 3 / T2). Edited via
+  // the AntonymChips component; seeded from the AI's proposed list.
+  let antonyms: string[] = [];
 
   function arrayToCsv(items: string[]): string {
     return items.join(', ');
@@ -56,7 +59,7 @@
     wordsCsv = '';
     wordRefsCsv = '';
     groupsCsv = '';
-    antonymsCsv = '';
+    antonyms = [];
     // Note: deliberately does NOT reset `error` — callers that use this
     // helper on success want to clear error too; callers on failure
     // already set their own error.
@@ -73,12 +76,19 @@
       const resp = await proposeLabels(hanzi.trim(), note.trim());
       proposed = resp;
       pinyin = resp.pinyin;
-      english = resp.english;
+      // English hint is authoritative — the user is the sole author of
+      // the canonical English gloss (SPEC §1.1). The AI's resp.english
+      // is ignored here; it's still in `proposed.english` if the user
+      // wants to compare. If the user typed no hint, the field starts
+      // empty so they can write one.
+      english = note.trim();
       meaning = resp.meaning;
       wordsCsv = arrayToCsv(resp.words);
       wordRefsCsv = arrayToCsv(resp.word_refs);
       groupsCsv = groupsToCsv(resp.groups);
-      antonymsCsv = arrayToCsv(resp.antonyms);
+      // Antonyms arrive as hanzi from the AI (per the system prompt).
+      // De-duplicate so the chip editor doesn't show duplicates.
+      antonyms = Array.from(new Set(resp.antonyms));
       // On success, clear any prior error.
       error = null;
     } catch (e) {
@@ -91,7 +101,7 @@
       wordsCsv = '';
       wordRefsCsv = '';
       groupsCsv = '';
-      antonymsCsv = '';
+      antonyms = [];
     } finally {
       proposing = false;
     }
@@ -123,7 +133,7 @@
         words: csvToArray(wordsCsv),
         word_refs: csvToArray(wordRefsCsv),
         groups: groupsFromCsv(groupsCsv),
-        antonyms: csvToArray(antonymsCsv),
+        antonyms: antonyms.map((s) => s.trim()).filter((s) => s.length > 0),
         author_confirmed: true
       });
       savedId = resp.id;
@@ -235,8 +245,8 @@
         </label>
 
         <label class="field">
-          <span class="label">Antonyms (comma-separated pinyin-with-tones)</span>
-          <input type="text" bind:value={antonymsCsv} />
+          <span class="label">Antonyms (hanzi chips — type and press Enter)</span>
+          <AntonymChips bind:value={antonyms} testid="antonyms" />
         </label>
 
         <div class="actions">
