@@ -68,9 +68,17 @@ const FAKE_WORD = {
     { to: 's-1', kind: 'lexical' as const, score: 1.0 },
     { to: '饿', kind: 'opposite' as const, score: 1.0 }
   ],
+  containing_sentences: ['s-1', 'wo-xihuan-chi'],
   created: '2026-06-27',
   updated: '2026-06-27',
   author_confirmed: true
+};
+
+const FAKE_WORD_NO_SENTENCES = {
+  ...FAKE_WORD,
+  id: 'lí',
+  name: '离',
+  containing_sentences: []
 };
 
 async function settle(target: HTMLElement) {
@@ -157,6 +165,62 @@ describe('AC26 — Unit detail page', () => {
     expect(target.querySelector('[data-testid="unit-type"]')?.textContent).toContain('word');
     const oppSection = target.querySelector('[data-testid="connections-kind-opposite"]');
     expect(oppSection?.textContent).toContain('饿');
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('AC27: word page lists containing sentences with links', async () => {
+    mockPageState.params = { id: 'chī' };
+    mockGetUnit.mockResolvedValue(FAKE_WORD);
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(UnitPage, { target });
+
+    await settle(target);
+
+    const section = target.querySelector('[data-testid="containing-sentences"]');
+    expect(section).toBeTruthy();
+    expect(section?.textContent).toContain('Sentences containing this word');
+    // Each sentence id renders as a link.
+    const links = section?.querySelectorAll('a[href^="/unit/"]');
+    expect(links?.length).toBe(2);
+    expect(links?.[0]?.getAttribute('href')).toBe('/unit/s-1');
+    expect(links?.[1]?.getAttribute('href')).toBe('/unit/wo-xihuan-chi');
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('AC27: word page shows empty-state when no sentences contain it', async () => {
+    mockPageState.params = { id: 'lí' };
+    mockGetUnit.mockResolvedValue(FAKE_WORD_NO_SENTENCES);
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(UnitPage, { target });
+
+    await settle(target);
+
+    const section = target.querySelector('[data-testid="containing-sentences"]');
+    expect(section).toBeTruthy();
+    expect(section?.querySelector('[data-testid="no-containing"]')?.textContent).toMatch(
+      /not yet referenced/i
+    );
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('AC27: sentence and group pages do NOT show the containing-sentences section', async () => {
+    mockPageState.params = { id: 's-1' };
+    mockGetUnit.mockResolvedValue(FAKE_SENTENCE);
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(UnitPage, { target });
+
+    await settle(target);
+
+    expect(target.querySelector('[data-testid="containing-sentences"]')).toBeNull();
 
     unmount(component);
     target.remove();

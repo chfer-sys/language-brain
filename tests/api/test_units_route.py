@@ -145,3 +145,58 @@ def test_get_empty_id_is_rejected():
     resp = client.get("/api/units/")
     assert resp.status_code in (404, 405)
     config_module.get_settings.cache_clear()
+
+
+def test_word_unit_includes_containing_sentences(client_with_vault):
+    """AC27: word detail response carries containing_sentences list."""
+    client, vault = client_with_vault
+    _seed_three_units(vault)
+    resp = client.get("/api/units/chī")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["type"] == "word"
+    # s-1 references chī in word_refs.
+    assert "s-1" in body["containing_sentences"]
+
+
+def test_word_unit_containing_sentences_empty_when_no_match(client_with_vault):
+    """AC27: word with no containing sentences returns empty list."""
+    client, vault = client_with_vault
+    _seed_three_units(vault)
+    # Add a word that nothing references.
+    write_unit(
+        vault,
+        {
+            "id": "lí",
+            "type": "word",
+            "name": "离",
+            "properties": {
+                "hanzi": "离",
+                "pinyin": "lí",
+                "english": "to leave",
+                "meaning": "going away",
+                "groups": [],
+                "antonyms": [],
+            },
+            "connections": [],
+            "created": "2026-06-27",
+            "updated": "2026-06-27",
+            "author_confirmed": True,
+        },
+    )
+    resp = client.get("/api/units/lí")
+    assert resp.status_code == 200
+    assert resp.json()["containing_sentences"] == []
+
+
+def test_sentence_unit_does_not_carry_containing_sentences(client_with_vault):
+    """AC27 only applies to words. Sentences and groups omit the field."""
+    client, vault = client_with_vault
+    _seed_three_units(vault)
+    resp = client.get("/api/units/s-1")
+    body = resp.json()
+    assert "containing_sentences" not in body
+
+    resp = client.get("/api/units/food")
+    body = resp.json()
+    assert "containing_sentences" not in body

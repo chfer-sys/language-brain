@@ -120,6 +120,23 @@
         {/each}
       {/if}
     </section>
+
+    {#if unit.type === 'word' && unit.containing_sentences !== undefined}
+      <section class="containing" data-testid="containing-sentences">
+        <h2>Sentences containing this word <span class="count">({unit.containing_sentences.length})</span></h2>
+        {#if unit.containing_sentences.length === 0}
+          <p class="empty" data-testid="no-containing">This word is not yet referenced by any saved sentence.</p>
+        {:else}
+          <ul>
+            {#each unit.containing_sentences as sentenceId (sentenceId)}
+              <li>
+                <a href="/unit/{encodeURIComponent(sentenceId)}">{sentenceId}</a>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+    {/if}
   {/if}
 </main>
 
@@ -259,5 +276,28 @@
     color: var(--lb-muted);
     font-size: 14px;
     margin: 8px 0 0;
+  }
+
+  .containing ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .containing li {
+    padding: 6px 0;
+    border-bottom: 1px solid var(--lb-border);
+    font-size: 14px;
+  }
+
+  .containing a {
+    color: var(--lb-fg);
+    text-decoration: none;
+  }
+
+  .containing a:hover,
+  .containing a:focus-visible {
+    color: var(--lb-accent);
+    text-decoration: underline;
   }
 </style>

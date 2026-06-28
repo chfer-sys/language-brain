@@ -69,7 +69,10 @@ export interface CommitSentenceResponse {
 // Unit detail (T32/T33, AC26/AC27). The endpoint returns the full
 // unit dict as it lives on disk — author view, includes english/
 // meaning. Frontend is responsible for not leaking these in search-
-// result contexts.
+// result contexts. Word units additionally carry `containing_sentences`
+// (a list of sentence ids whose words[]/word_refs[] include this
+// word). Per AC27 the word never renders alone — it is always shown
+// in the context of its containing sentences.
 export interface UnitDetail {
   id: string;
   type: UnitType;
@@ -79,6 +82,7 @@ export interface UnitDetail {
   created: string;
   updated: string;
   author_confirmed: boolean;
+  containing_sentences?: string[];
 }
 
 export async function getUnit(id: string): Promise<UnitDetail> {
