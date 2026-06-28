@@ -139,3 +139,57 @@ Per `.specs/language-brain.md` §11:
 4. ✅ `docs-writer` updated `README.md` to reflect v0.3 reality.
 5. ✅ Trace record written to `.specs/_traces.md` (this file).
 6. ⏸ User sign-off — pending. Ready for review.
+---
+
+## AI Integration (2026-06-28)
+
+The MiniMax M2.1 AI is now wired and live.
+
+### What changed
+
+- **`.env`** — Added `LANGUAGE_BRAIN_AI_ENDPOINT=https://api.minimax.io/v1` and
+  `LANGUAGE_BRAIN_AI_MODEL=MiniMax-M2.1`. Endpoint URL was wrong initially
+  (`.chat` instead of `.io`); corrected after the user provided the right URL.
+- **`api/bootstrap.py`** — New module. Loads `.env` before `api.config` is
+  imported (so the Settings lru_cache captures the populated environment).
+  Clears the cache and pre-warms settings.
+- **`api/main.py`** — Imports `api.bootstrap` first.
+- **`api/services/ai_client.py`** — `_parse_labels_json` made tolerant of:
+  1. `<think>...</think>` reasoning blocks (MiniMax-M2 injects these).
+  2. Rich object shapes in words/word_refs/antonyms/groups (the AI returns
+     `{"word": "我", "pinyin": "wǒ"}` instead of bare `"我"`).
+  3. Bare-string groups (some models return `["basic-verbs"]`).
+- **Tests:** 4 new pytest for the tolerant parser. 442 pytest pass total.
+
+### Endpoints exercised
+
+- `POST /api/sentences` with `{"hanzi":"今天很热"}` → 6s real AI call →
+  returns real pinyin, English, meaning, groups (Weather/Daily Life/
+  Temperature), antonym (lěng).
+- `POST /api/sentences/commit` → 30s (model download warm + connection
+  recompute for 3 new words against 5 existing sentences + 7 existing
+  words). Wrote 7 lexical + 3 semantic pairs.
+
+### Live verification
+
+Screenshot in `.specs/screenshots/ai-integration-live.png`. The `/add`
+page renders the AI's draft in real-time with proper tone-marked pinyin.
+Searching the new words from `/` finds them with correct `word_refs`.
+
+### Test totals (after AI integration)
+
+- 442 pytest (was 438; +4 parser tests)
+- 28 vitest (unchanged)
+- 470 total, 0 failing
+
+### What was the bug
+
+Two bugs surfaced when we hit real AI for the first time:
+
+1. **`.env` not loaded at all.** `config.py` had a comment claiming
+   python-dotenv loaded it at process level, but no code called
+   `load_dotenv()`. The Settings() singleton was constructed from an
+   empty environment. New `bootstrap.py` fixes this.
+
+2. **Parser couldn't handle MiniMax's response shape.** Two reasons:
+   reasoning prefix and rich objects. New parser handles both.
