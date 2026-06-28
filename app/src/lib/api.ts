@@ -66,6 +66,30 @@ export interface CommitSentenceResponse {
   group_ids_created: string[];
 }
 
+// Unit detail (T32/T33, AC26/AC27). The endpoint returns the full
+// unit dict as it lives on disk — author view, includes english/
+// meaning. Frontend is responsible for not leaking these in search-
+// result contexts.
+export interface UnitDetail {
+  id: string;
+  type: UnitType;
+  name: string;
+  properties: Record<string, unknown>;
+  connections: { to: string; kind: ConnectionKind; score: number }[];
+  created: string;
+  updated: string;
+  author_confirmed: boolean;
+}
+
+export async function getUnit(id: string): Promise<UnitDetail> {
+  const res = await fetch(`${API_BASE}/api/units/${encodeURIComponent(id)}`);
+  if (res.status === 404) {
+    throw new Error(`unit ${id} not found`);
+  }
+  if (!res.ok) throw new Error(`getUnit failed: ${res.status}`);
+  return res.json();
+}
+
 // Base URL — overridable in dev. Default points at the FastAPI backend.
 export const API_BASE = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE)
   || 'http://localhost:8000';
