@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SearchResult } from '$lib/api';
+  import HanziWithPinyin from './HanziWithPinyin.svelte';
 
   export let result: SearchResult;
 
@@ -13,10 +14,19 @@
   };
 
   $: href = result.type === 'group' ? `/group/${result.id}` : `/unit/${result.id}`;
+  // Only sentence/word names contain hanzi. Group ids are slugs — no
+  // pinyin treatment.
+  $: nameIsHanzi = result.type === 'sentence' || result.type === 'word';
 </script>
 
 <a class="row" {href} data-testid="result-row" data-unit-type={result.type}>
-  <span class="name">{result.name}</span>
+  <span class="name">
+    {#if nameIsHanzi}
+      <HanziWithPinyin text={result.name} testid="result-name" />
+    {:else}
+      {result.name}
+    {/if}
+  </span>
   <span class="snippet">{result.snippet}</span>
   <span class="kinds">
     {#each result.kinds as k (k)}

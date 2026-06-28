@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { getUnit, type UnitDetail, type ConnectionKind } from '$lib/api';
+  import HanziWithPinyin from '$lib/components/HanziWithPinyin.svelte';
 
   let unit: UnitDetail | null = null;
   let loading = true;
@@ -114,7 +115,13 @@
     <p class="status error" role="alert">{error}</p>
   {:else if unit}
     <header class="header">
-      <h1 data-testid="unit-name">{unit.name}</h1>
+      <h1 data-testid="unit-name">
+        {#if unit.type === 'sentence' || unit.type === 'word'}
+          <HanziWithPinyin text={unit.name} testid="unit-name" />
+        {:else}
+          {unit.name}
+        {/if}
+      </h1>
       <span class="type-badge" data-testid="unit-type">{unit.type}</span>
     </header>
 
