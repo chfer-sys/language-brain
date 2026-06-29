@@ -308,3 +308,101 @@ Four tasks landed on `kickoff/v0.4` (commits `dac3dd2` → `f7df24c`
 
 - **Portfolio-grade documentation.** User said "we can do this later
   i will have a think." Still parked.
+
+---
+
+## v0.4.1 — English-query search (2026-06-29)
+
+User-reported gap from `.specs/My-Reveiew.md`: typing English
+"i want to eat" returned unrelated groups (emotion, greetings,
+drinks) at score 0.25 via char-overlap Jaccard — never the
+sentence(s) containing 吃 and never the 吃 word unit itself.
+
+Root cause analysis
+-------------------
+Two independent bugs in the search path:
+
+1. **Lexical pass false positives.** `lexical_search` tokenized
+   the query with the char-level `tokenize_sentence` (designed
+   for hanzi). "i want to eat" → 9 chars → matched "emotion" via
+   `e/i/t` char overlap at Jaccard 0.625.
+
+2. **No English data on word units.** Word units had empty
+   `properties.english` because the commit flow passed `english=""`
+   to `ensure_word_unit`. Even with a smarter lexical pass, there
+   was nothing for "eat" to match against to surface the 吃 word
+   unit directly.
+
+3. **Semantic threshold too strict.** The SPEC's 0.6 default
+   filtered out all matches against the vault's real embeddings
+   (cosine clusters 0.3-0.6 for reasonable queries).
+
+Three tasks landed on `kickoff/v0.4.1-english-search` (commits
+`4dcc86e`, `730cd98`, `0f3f822`).
+
+### T1 — LANGUAGE_BRAIN_SEMANTIC_THRESHOLD env var
+
+- `api/config.py`: `Settings.semantic_threshold` (default 0.6
+  per SPEC, range [0.0, 1.0]). Read from
+  `LANGUAGE_BRAIN_SEMANTIC_THRESHOLD` env var.
+- `api/services/search.py`: `semantic_search()` and
+  `meanings_search()` default to the setting when no explicit
+  threshold is passed. Default arg changed from float to
+  `float | None`.
+- `api/routes/search.py`: `GET /api/search` accepts
+  `?threshold=` query param for one-off overrides.
+
+Default unchanged — env var and query param are pure additions.
+
+### T2 — Propagate sentence.english → word.english
+
+Forward path (auto on commit):
+- `api/services/english_slice.py`: `_slice_sentence_english`
+  splits sentence english into per-word fragments. Positional
+  mapping when token count matches word count (with stopwords
+  stripped to empty slots); fallback to whole english for each
+  slot when counts differ.
+- `api/services/word_registry.py`: new `backfill_word_english`
+  helper. Writes ONLY when the existing `properties.english` is
+  empty — never overwrites.
+- `api/routes/commit_sentence.py`: after `ensure_word_unit`,
+  calls `backfill_word_english` for the same pinyin.
+
+Backward path (one-shot backfill):
+- `scripts/backfill_word_english.py`: CLI that walks every word
+  whose english is empty, gathers sentence contexts, picks the
+  shortest as the cleanest gloss. `--dry-run` to preview.
+  Skips `PARKED_HANZI` (Note 2 of v0.4-backlog).
+
+### T3 — Lexical search matches English queries
+
+- Query side: `lexical_search` now unions char-level and
+  whole-word tokens. "i want to eat" produces
+  {i,w,a,n,t,o,e} ∪ {i,want,to,eat}.
+- Unit side: `_score_unit` scores against hanzi + english +
+  meaning fields, taking the max Jaccard.
+- Group ranker fix: substring match on slug ids preserved
+  (autocomplete-style "verb" → "basic-verbs"), but display_name
+  match is now whole-word only — kills the "i in g-emotion"
+  false positive.
+
+### Final v0.4.1 totals
+
+- 584 pytest (was 522, +62: 7 threshold + 24 english propagation
+  + 16 lexical English + 15 backfill script)
+- 42 vitest (unchanged from v0.4)
+- 626 total, 0 failing
+
+### Live verified
+
+GET /api/search?q=i+want+to+eat now returns:
+
+| rank | id          | type    | score | name    |
+|------|-------------|---------|-------|---------|
+| 1    | chi1        | word    | 0.4   | 吃      |
+| 2    | w-xi-ng-ch  | sentence| 0.4   | 我想吃  |
+| 3    | wo3         | word    | 0.4   | 我      |
+| 4    | xiang3      | word    | 0.4   | 想      |
+
+The user's literal request ("show 吃 when typing eat") now works.
+No more emotion/drinks/greetings false positives.
