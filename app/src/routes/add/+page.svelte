@@ -220,8 +220,11 @@
         </label>
 
         <label class="field">
-          <span class="label">English</span>
-          <input type="text" bind:value={english} />
+          <span class="label">English (your hint — the canonical gloss)</span>
+          <input type="text" bind:value={english} data-testid="english-input" />
+          {#if proposed?.english && proposed.english !== english}
+            <span class="sub-hint">AI suggested: <code>{proposed.english}</code></span>
+          {/if}
         </label>
 
         <label class="field">
@@ -301,6 +304,15 @@
     color: var(--lb-muted);
     font-size: 14px;
     margin: 0;
+  }
+
+  .sub-hint {
+    color: var(--lb-muted);
+    font-size: 12px;
+  }
+
+  .sub-hint code {
+    font-size: 12px;
   }
 
   .form,

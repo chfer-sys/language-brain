@@ -215,6 +215,93 @@ describe('AC25 — Add-sentence page propose-labels flow', () => {
   });
 
   // ---------------------------------------------------------------------
+  // T1 (Note 1): English hint authoritative
+  // ---------------------------------------------------------------------
+
+  it('pre-fills the English field from the typed hint (Note 1: authoritative)', async () => {
+    mockProposeLabels.mockResolvedValue(FAKE_LABELS);
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    const noteInput = target.querySelectorAll('input[type="text"]')[0] as HTMLInputElement;
+    noteInput.value = 'drooling over food';
+    noteInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await tick();
+
+    await clickButton(target, 'propose-btn');
+
+    // English field should contain the user's hint, NOT the AI's draft.
+    const english = target.querySelector('[data-testid="english-input"]') as HTMLInputElement;
+    expect(english.value).toBe('drooling over food');
+
+    // The AI's draft should be visible as a "compare with AI" hint.
+    const proposedForm = target.querySelector('[data-testid="proposed-form"]') as HTMLElement;
+    expect(proposedForm.textContent).toContain("AI suggested");
+    expect(proposedForm.textContent).toContain(FAKE_LABELS.english);
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('sends the user-edited English field to commitSentence (not the AI draft)', async () => {
+    mockProposeLabels.mockResolvedValue(FAKE_LABELS);
+    mockCommitSentence.mockResolvedValue({
+      id: 'wo-liu-kou-shui-le',
+      saved_at: '2026-06-27',
+      word_ids_created: [],
+      group_ids_created: []
+    });
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+
+    // User edits the English field (was pre-filled from hint, or empty).
+    const english = target.querySelector('[data-testid="english-input"]') as HTMLInputElement;
+    english.value = 'final english I wrote';
+    english.dispatchEvent(new Event('input', { bubbles: true }));
+    await tick();
+
+    await clickButton(target, 'save-btn');
+
+    const body = mockCommitSentence.mock.calls[0][0] as Record<string, unknown>;
+    expect(body.english).toBe('final english I wrote');
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('hides the AI-suggested hint when the user matches the AI draft', async () => {
+    mockProposeLabels.mockResolvedValue(FAKE_LABELS);
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    const noteInput = target.querySelectorAll('input[type="text"]')[0] as HTMLInputElement;
+    // User happens to type the same text as the AI draft.
+    noteInput.value = FAKE_LABELS.english;
+    noteInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await tick();
+
+    await clickButton(target, 'propose-btn');
+
+    const proposedForm = target.querySelector('[data-testid="proposed-form"]') as HTMLElement;
+    // The compare-with-AI hint should NOT appear when the values match.
+    expect(proposedForm.textContent).not.toContain('AI suggested');
+
+    unmount(component);
+    target.remove();
+  });
+
+  // ---------------------------------------------------------------------
   // T2 (Note 3): Antonym chip editor — bare hanzi, not pinyin
   // ---------------------------------------------------------------------
 
