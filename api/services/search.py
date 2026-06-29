@@ -268,12 +268,30 @@ def _score_unit(
 
     * the unit is not a dict;
     * the unit's ``id`` is missing or not a non-empty string;
-    * the unit's ``properties.hanzi`` is missing, non-string, or
-      tokenizes to ``[]`` (so Jaccard would be 0.0 anyway).
+    * the unit has no tokenizable text in any of its scored fields
+      (hanzi + english + meaning).
 
-    The Jaccard call itself returns 0.0 for empty inputs, but we
-    short-circuit to keep the trace clean and avoid paying the
-    set-construction cost on units that can't possibly match.
+    Scoring
+    -------
+    Three fields are scored against ``query_tokens``:
+
+    1. ``properties.hanzi`` — char-level tokens (CJK-aware via
+       :func:`api.services.lexical.tokenize_sentence`).
+    2. ``properties.english`` — lowercased whole-word tokens (via
+       :func:`_tokenize_english_for_search`).
+    3. ``properties.meaning`` — same whole-word tokenizer.
+
+    The final score is the **max** of the three Jaccard values. This
+    means a hanzi query naturally scores against hanzi tokens, an
+    English query naturally scores against english/meaning tokens,
+    and a mixed query takes the best match across all three. The
+    char-level Jaccard over ASCII was the source of the v0.4.1
+    regression (typing "i want to eat" matched `emotion` because
+    of character overlap); with this change English queries land
+    on english/meaning tokens instead.
+
+    Empty fields are silently skipped (no penalty). A unit with
+    no tokenizable text returns ``None``.
     """
     if not isinstance(unit, dict):
         return None
@@ -281,16 +299,54 @@ def _score_unit(
     if not isinstance(unit_id, str) or not unit_id:
         return None
     properties = unit.get("properties")
-    hanzi = properties.get("hanzi") if isinstance(properties, dict) else None
-    if not isinstance(hanzi, str) or not hanzi:
+    if not isinstance(properties, dict):
         return None
-    unit_tokens = tokenize_sentence(hanzi)
-    if not unit_tokens:
+
+    best_score = 0.0
+
+    hanzi = properties.get("hanzi")
+    if isinstance(hanzi, str) and hanzi:
+        hanzi_tokens = tokenize_sentence(hanzi)
+        if hanzi_tokens:
+            best_score = max(best_score, jaccard(query_tokens, hanzi_tokens))
+
+    for field_name in ("english", "meaning"):
+        text = properties.get(field_name)
+        if not isinstance(text, str) or not text.strip():
+            continue
+        text_tokens = _tokenize_english_for_search(text)
+        if text_tokens:
+            best_score = max(best_score, jaccard(query_tokens, text_tokens))
+
+    if best_score <= 0.0:
         return None
-    score = jaccard(query_tokens, unit_tokens)
-    if score <= 0.0:
-        return None
-    return (unit_id, unit_type, score)
+    return (unit_id, unit_type, best_score)
+
+
+#: Regex used to split English text into whole-word tokens for
+#: search scoring. Same shape as
+#: :data:`api.services.english_slice._TOKEN_RE` — kept in sync so
+#: the search ranker and the commit-time slice use the same token
+#: definition. We don't import from english_slice to avoid a
+#: layering dependency (search is lower-level than services that
+#: already depend on settings).
+_ENGLISH_WORD_RE = re.compile(r"[A-Za-z']+")
+
+
+def _tokenize_english_for_search(text: str) -> list[str]:
+    """Lowercased whole-word tokens for English search scoring.
+
+    Unlike :func:`api.services.english_slice._tokenize_english` this
+    does NOT drop stopwords — search needs to match ``"a"`` /
+    ``"the"`` too so a user typing those characters doesn't get an
+    empty result. The token shape is the same (whole words, not
+    characters) so the char-Jaccard false positives disappear.
+
+    Returns ``[]`` for non-string, empty, or whitespace-only input.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+    return [t for t in _ENGLISH_WORD_RE.findall(text.lower())]
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +448,30 @@ def lexical_search(
         match, or the ``types`` filter excludes everything.
     """
     # Step 1 — tokenize the query.
-    query_tokens = tokenize_sentence(query) if isinstance(query, str) else []
+    # We build the canonical query token set as the UNION of
+    # char-level tokens (good for hanzi queries) and whole-word
+    # tokens (good for English queries). The ranker's max-of-three
+    # Jaccard scoring on each unit field then naturally picks the
+    # right field for the query type:
+    #
+    #   - Hanzi query "吃" → char tokens {吃}; unit's hanzi tokens
+    #     share 吃 → max Jaccard is via the hanzi field.
+    #   - English query "eat" → word tokens {eat}; unit's english
+    #     tokens share eat → max Jaccard is via the english field.
+    #   - Mixed query "吃 eat" → both sets; whichever field matches
+    #     best wins.
+    #
+    # Before v0.4.1 T3, only char tokens were used, which made
+    # "i want to eat" match `emotion` (0.625 char overlap) instead
+    # of the eat-related sentences.
+    if isinstance(query, str):
+        char_tokens = tokenize_sentence(query)
+        word_tokens = _tokenize_english_for_search(query)
+        # De-dupe via set union, then back to a list (order
+        # doesn't matter for Jaccard).
+        query_tokens = list(set(char_tokens) | set(word_tokens))
+    else:
+        query_tokens = []
     if not query_tokens:
         return []
 
@@ -588,6 +667,18 @@ def group_search(
 
     ranked: list[tuple[str, str, float]] = []
     first_token_first_char = raw_tokens[0][:1]
+    # Match against each group via two separate checks so we keep
+    # the existing substring-match behavior on slug ids (lets a user
+    # type "verb" and find the slug ``basic-verbs``) but switch to
+    # whole-word match on display names (so typing "i want to eat"
+    # no longer false-positives on the "Emotion" group via the
+    # substring ``"i" in "g-emotion emotion"``).
+    #
+    # A token matches when EITHER:
+    #   (a) it appears as a substring of the slug (preserves the
+    #       existing partial-type behavior on kebab-case ids), OR
+    #   (b) it equals a whole-word token of the display_name (new
+    #       v0.4.1 path that kills the ASCII false positives).
     for group in groups:
         if not isinstance(group, dict):
             continue
@@ -598,14 +689,27 @@ def group_search(
         display_name = ""
         if isinstance(properties, dict):
             raw_dn = properties.get("display_name")
+
             if isinstance(raw_dn, str):
                 display_name = raw_dn
 
-        haystack = f"{slug_id} {display_name}".lower()
-        if not haystack.strip():
-            continue
+        slug_lower = slug_id.lower()
+        display_words = set(
+            re.findall(r"[A-Za-z0-9]+", display_name.lower())
+        )
 
-        matched = sum(1 for tok in raw_tokens if tok in haystack)
+        def _match(tok: str) -> bool:
+            # Substring on slug preserves the autocomplete-style
+            # match on kebab-case ids.
+            if tok in slug_lower:
+                return True
+            # Whole-word match on display_name kills the
+            # ASCII-char-false-positive bug.
+            if display_words and tok in display_words:
+                return True
+            return False
+
+        matched = sum(1 for tok in raw_tokens if _match(tok))
         if matched <= 0:
             continue
         score = matched / len(raw_tokens)
