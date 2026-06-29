@@ -114,13 +114,17 @@ from api.services.antonym_resolver import (
     resolve_antonym_to_word_id,
 )
 from api.services.embedder import Embedder, get_embedder
+from api.services.english_slice import _slice_sentence_english
 from api.services.group_helpers import ensure_groups_from_proposed
 from api.services.group_registry import add_member_to_group
 from api.services.indexer import Index
 from api.services.lexical import add_lexical_edge_to_word
 from api.services.segmenter import lcut as segmenter_lcut
 from api.services.unit_writer import read_unit, unit_path, write_unit
-from api.services.word_registry import ensure_word_unit
+from api.services.word_registry import (
+    backfill_word_english,
+    ensure_word_unit,
+)
 
 log = logging.getLogger(__name__)
 
@@ -369,7 +373,16 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
     # Step 2 — ensure each referenced word has a unit file (AC2)
     # ------------------------------------------------------------------
     paired_hanzi = _pair_word_refs_with_hanzi(word_refs, words)
-    for pinyin_ref, word_hanzi in zip(word_refs, paired_hanzi):
+    # v0.4.1 T2: slice the sentence's english into per-word fragments
+    # so each new word unit inherits a starting english. The backfill
+    # helper is a no-op when the slot is already populated, so re-commits
+    # and user-edited words are untouched.
+    word_english = _slice_sentence_english(
+        body.english, list(words), list(word_refs)
+    )
+    for pinyin_ref, word_hanzi, word_eng in zip(
+        word_refs, paired_hanzi, word_english
+    ):
         # Skip empty / whitespace pinyin defensively. The schema
         # allows zero-length entries via the default_factory, and
         # a stray blank here would fail ensure_word_unit's
@@ -380,9 +393,14 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
             vault_root,
             hanzi=word_hanzi,
             pinyin=pinyin_ref,
-            english="",
+            english=word_eng,
             meaning="",
         )
+        # If the word unit already existed (ensure_word_unit is a
+        # no-op on collision), backfill english into the empty slot.
+        # Cheap when english is already set — the helper returns
+        # immediately without a write.
+        backfill_word_english(vault_root, pinyin_ref, word_eng)
 
     # ------------------------------------------------------------------
     # Step 3 — add lexical edges from each word to the sentence (AC3)

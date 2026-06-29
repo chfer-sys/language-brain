@@ -18,11 +18,14 @@ All I/O goes through :mod:`api.services.unit_writer`.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from api.services.unit_writer import read_unit, unit_path, write_unit
+
+log = logging.getLogger(__name__)
 
 
 def _today_iso() -> str:
@@ -95,6 +98,59 @@ def ensure_word_unit(
     }
     write_unit(vault_root, word_unit)
     return word_unit
+
+
+def backfill_word_english(
+    vault_root: str,
+    pinyin: str,
+    english: str,
+) -> bool:
+    """If the word unit exists and its ``properties.english`` is empty,
+    set it to ``english`` and persist. Returns True iff a write
+    happened.
+
+    Added in v0.4.1 T2: when a sentence is committed, the per-word
+    English slice from the sentence propagates to word units only
+    when the slot is empty (we never overwrite an existing value).
+    This is a soft auto-fill, not an authoritative rewrite — the
+    user (or a future per-word edit flow) can correct it later.
+
+    No-ops when:
+    * ``pinyin`` is empty/whitespace
+    * ``english`` is empty/whitespace (nothing to backfill)
+    * the word unit file doesn't exist
+    * the existing ``properties.english`` is already non-empty
+    * the file fails to read or write (errors are logged + swallowed
+      so the commit flow doesn't fail on a cosmetic field)
+    """
+    if not isinstance(pinyin, str) or not pinyin.strip():
+        return False
+    if not isinstance(english, str) or not english.strip():
+        return False
+    path = unit_path(vault_root, "word", pinyin)
+    if not path.is_file():
+        return False
+    try:
+        existing = read_unit(vault_root, "word", pinyin)
+    except (OSError, ValueError) as exc:
+        log.warning("backfill_word_english: read failed for %s: %s", pinyin, exc)
+        return False
+    properties = existing.get("properties")
+    if not isinstance(properties, dict):
+        return False
+    current = properties.get("english")
+    if not isinstance(current, str) or current.strip():
+        # Already populated — never overwrite.
+        return False
+    properties["english"] = english.strip()
+    existing["properties"] = properties
+    existing["updated"] = _today_iso()
+    try:
+        write_unit(vault_root, existing)
+    except OSError as exc:
+        log.warning("backfill_word_english: write failed for %s: %s", pinyin, exc)
+        return False
+    return True
 
 
 def list_all_words(vault_root: str) -> list[dict]:
