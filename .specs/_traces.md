@@ -193,3 +193,118 @@ Two bugs surfaced when we hit real AI for the first time:
 
 2. **Parser couldn't handle MiniMax's response shape.** Two reasons:
    reasoning prefix and rich objects. New parser handles both.
+
+---
+
+## v0.4 kickoff (2026-06-28)
+
+Deferred work from v0.3 review (per `.specs/v0.4-backlog.md`).
+Four tasks landed on `kickoff/v0.4` (commits `dac3dd2` → `f7df24c`
+→ `52ef92e` → `ef79553` → `c749862` → `6f4cae8`).
+
+### T1 — English hint is authoritative (Note 1)
+
+- `app/src/routes/add/+page.svelte`: after `proposeLabels`, the
+  English field is pre-filled from the typed hint (not from the AI's
+  `resp.english`). If no hint, the field is empty. The AI's draft
+  appears as a non-destructive "AI suggested: …" sub-hint for
+  comparison only.
+- Rationale: SPEC §1.1 — the user is the sole author of the canonical
+  English gloss; the AI only proposes labels.
+- Tests: 3 new (`pre-fills from hint`, `edited english reaches commit`,
+  `AI hint hidden when values match`). Updated the existing test to
+  assert English starts empty when no hint.
+
+### T2 — Antonyms are hanzi, not pinyin (Note 3)
+
+- `api/services/antonym_resolver.py`: new module. `_looks_like_hanzi`
+  detects CJK characters; `resolve_antonym_to_word_id` looks up
+  existing word units by `properties.hanzi`, or derives a pinyin id
+  via `pypinyin` and creates the word unit if no match exists.
+- `api/routes/commit_sentence.py`: pre-load word units once, resolve
+  each antonym entry through the new helper, then wire the one-sided
+  reference into the target word's `properties.antonyms`. The
+  user-facing sentence `properties.antonyms` array preserves the
+  original form (hanzi preferred, pinyin accepted for backward compat
+  with v0.3 callers/tests).
+- `app/src/lib/components/AntonymChips.svelte`: chip editor. Type
+  hanzi + Enter (or comma) to add; click × to remove; Backspace on
+  empty input removes the last chip.
+- `app/src/routes/add/+page.svelte`: antonyms field is now the chip
+  component seeded from the AI's proposed hanzi list.
+- `app/src/routes/unit/[id]/+page.svelte`: render antonyms as
+  read-only chips for visual scanability.
+- Tests: 11 resolver unit tests, 3 commit integration tests, 5 chip
+  editor UI tests.
+
+### T3 — Orphan word unit cleanup
+
+- `scripts/cleanup_orphan_words.py`: one-shot, idempotent CLI.
+  - Phase 1: re-segment every sentence with the current segmenter;
+    derive new `word_refs` via pypinyin; ensure every referenced
+    word unit exists; rewrite the sentence.
+  - Phase 2: delete orphan word units whose id is not in any
+    sentence's post-re-segment `word_refs[]` AND whose hanzi is not
+    in `PARKED_HANZI` (`了 的 吗 呢 吧 啊 嘛 啦` — kept per Note 2).
+  - Phase 3: re-run `compute_connections` so edges reflect new ids.
+  - `--dry-run` reports changes without modifying anything.
+- Live verified: ran against the real vault. 3 sentences
+  re-segmented, `liúkǒushuǐ` word unit created, `bié` and `kě le`
+  orphan files deleted. Re-run is a no-op (idempotent).
+- Tests: 16 covering no-change, compound split, malformed input,
+  PARKED_HANZI contents, delete-vs-keep-vs-dry-run-vs-missing,
+  `_all_sentence_word_refs` (union/empty/malformed), end-to-end
+  dry-run + real-run.
+
+### T4 — Pinyin-on-hover + tone color coding (Note 4)
+
+- `api/routes/pinyin.py`: `GET /api/pinyin/{text}` returns one entry
+  per input character: `{char, pinyin, tone}`. Backed by pypinyin's
+  TONE3 style (`ni3` → `nǐ` + tone 3). Per-character memoization
+  (module-level dict). Non-hanzi chars (punctuation, ASCII) come
+  back with empty pinyin + tone 5.
+- `app/src/lib/components/HanziWithPinyin.svelte`: new reusable
+  component. Fetches on mount, caches per-text in a module-level
+  Map shared across instances. Renders each char in its own span
+  with: tone class → colored bottom border (1=red, 2=orange,
+  3=green, 4=blue, 5=gray), native `title={pinyin}` for browser
+  tooltip fallback, `data-tone`/`data-pinyin` for tests.
+- `app/src/lib/components/ResultRow.svelte`: name wrapped in
+  `HanziWithPinyin` for sentence/word results (group ids are
+  slugs).
+- `app/src/routes/unit/[id]/+page.svelte`: header h1 wrapped in
+  `HanziWithPinyin` for sentence/word units.
+- Tests: 7 endpoint tests (tones 1/3/4/5, punctuation, all-five-
+  tones, cache hit, empty path, long sentence), 6 component tests
+  (tone class application, native title tooltip, data attributes,
+  fetch URL, empty input no-fetch, fetch-failure fallback).
+- Live verified: typed "吃" in the search box → 5 result rows with
+  tone-colored underlines. 吃=red (1), 饭=blue (4), 我/喜=green (3).
+  Each char has a native title tooltip with the pinyin.
+
+### Final v0.4 totals
+
+- 522 pytest (was 477, +45: 13 pinyin, 16 resolver+commit, 16
+  cleanup script)
+- 42 vitest (was 28, +14: 3 English, 5 chip, 6 pinyin-component)
+- 564 total, 0 failing
+
+### Out of scope for v0.4 (parked for v0.5+)
+
+- **English-query gap.** The user note in `.specs/My-Reveiew.md`
+  flags that typing English like "i want to eat" should surface
+  sentences related to 吃. Today the FAISS semantic search CAN find
+  them (cosine ~0.08–0.28 for the seeded sentences) but the default
+  threshold of 0.6 (per SPEC §6 AC17) filters them all out. The
+  user's vault also has thin `meaning` fields (some are just copies
+  of `english` from pre-T34 commits). Fix needs both: lower the
+  default threshold (or expose `LANGUAGE_BRAIN_SEMANTIC_THRESHOLD`
+  env var) AND reindex with richer meanings. Park for v0.5.
+
+- **Grammar unit type.** Per `.specs/Note-for-next.md` /
+  `.specs/My-Reveiew.md`, the user wants grammar as a separate unit
+  type with its own database. Significant scope — needs SPEC
+  discussion before any code. Park for v0.5+.
+
+- **Portfolio-grade documentation.** User said "we can do this later
+  i will have a think." Still parked.
