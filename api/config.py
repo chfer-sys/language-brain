@@ -61,6 +61,20 @@ class Settings(BaseSettings):
         description="Default model identifier passed to the AI provider.",
     )
 
+    semantic_threshold: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Cosine-similarity cutoff for semantic search (SPEC §6 AC17). "
+            "Tunable per instance via the LANGUAGE_BRAIN_SEMANTIC_THRESHOLD "
+            "env var. The default 0.6 matches the SPEC; lower it (e.g. 0.4) "
+            "for vaults with thin meaning fields where English queries "
+            "cluster around 0.3–0.5 similarity. The route also accepts a "
+            "?threshold= query param for one-off overrides."
+        ),
+    )
+
     def debug_summary(self) -> dict[str, Any]:
         """Return a log-safe summary of the settings.
 

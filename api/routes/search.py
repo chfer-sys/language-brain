@@ -266,6 +266,18 @@ def search(
             "Default: all. T20 ignores this; T22+ will gate it."
         ),
     ),
+    threshold: float | None = Query(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Cosine-similarity cutoff for the semantic pass. "
+            "Defaults to the process setting "
+            "(LANGUAGE_BRAIN_SEMANTIC_THRESHOLD env var, falling back to "
+            "the SPEC default 0.6). Lower this for vaults with thin "
+            "meaning fields where English queries cluster at 0.3-0.5."
+        ),
+    ),
 ) -> SearchResponse:
     """GET /api/search — search for units.
 
@@ -337,7 +349,9 @@ def search(
     # kinds contributed.
     semantic_hits: list[SearchHit] = []
     if (service_types is None) or ("sentence" in service_types):
-        semantic_hits = semantic_search(vault_root, query=q, limit=limit)
+        semantic_hits = semantic_search(
+            vault_root, query=q, limit=limit, threshold=threshold
+        )
 
     merged, kinds_by_key = merge_hits_with_kinds(
         ("lexical", lexical_hits),

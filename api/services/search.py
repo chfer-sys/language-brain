@@ -792,15 +792,16 @@ def semantic_search(
     vault_root: str,
     query: str,
     limit: int = 20,
-    threshold: float = SEMANTIC_THRESHOLD,
+    threshold: float | None = None,
     embedder: Embedder | None = None,
 ) -> list[SearchHit]:
     """Semantic search over sentence units via the FAISS index.
 
     AC17 contract: returns sentence units whose ``meaning`` embedding
     has cosine similarity to the query embedding strictly greater
-    than ``threshold``. Default ``threshold`` is ``SEMANTIC_THRESHOLD``
-    (0.6 per the SPEC).
+    than ``threshold``. Default ``threshold`` is read from the
+    process settings (``LANGUAGE_BRAIN_SEMANTIC_THRESHOLD`` env var,
+    falling back to :data:`SEMANTIC_THRESHOLD` = 0.6 per the SPEC).
 
     The function never raises on a missing index — an empty vault
     returns ``[]``. It also never raises on a missing unit file: a
@@ -811,6 +812,10 @@ def semantic_search(
     """
     if not isinstance(query, str) or not query.strip():
         return []
+    if threshold is None:
+        from api.config import get_settings
+
+        threshold = get_settings().semantic_threshold
     if embedder is None:
         embedder = get_embedder()
     index = Index.load_or_empty(vault_root)
@@ -1049,7 +1054,7 @@ def suggest_units(
 def meanings_search(
     vault_root: str,
     text: str,
-    threshold: float = SEMANTIC_THRESHOLD,
+    threshold: float | None = None,
     limit: int = 20,
     embedder: Embedder | None = None,
 ) -> list[dict]:
@@ -1063,6 +1068,10 @@ def meanings_search(
     function does not log the query text at INFO level (DEBUG-level
     diagnostics are fine, but the production log stream must not
     receive user text).
+
+    ``threshold`` defaults to the process setting
+    (``LANGUAGE_BRAIN_SEMANTIC_THRESHOLD`` env var, falling back to
+    :data:`SEMANTIC_THRESHOLD` = 0.6 per the SPEC).
 
     Each result is a dict ``{"id": str, "hanzi": str, "pinyin": str,
     "score": float}``. The Pydantic response model
