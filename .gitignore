@@ -13,6 +13,12 @@ dist/
 vault/index/*.npy
 vault/index/faiss.index
 vault/index/*.json
+# v0.5.1 SQLite runtime store — gitignored; vault.dump.sql is the git mirror
+vault/index/vault.db
+vault/index/vault.db-wal
+vault/index/vault.db-shm
+# v0.5.3 dictionary source CSV — gitignored; download at first-run
+vault/index/sources/
 vault/units/**/*.json
 *.egg-info/
 .pytest_cache/
