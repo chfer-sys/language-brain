@@ -699,13 +699,16 @@ def group_search(
         )
 
         def _match(tok: str) -> bool:
-            # Substring on slug preserves the autocomplete-style
-            # match on kebab-case ids.
-            if tok in slug_lower:
-                return True
             # Whole-word match on display_name kills the
-            # ASCII-char-false-positive bug.
+            # ASCII-char-false-positive bug (typing "i" no longer
+            # hits the "Ability" group via "i" in "ability").
             if display_words and tok in display_words:
+                return True
+            # Substring on slug preserves autocomplete (typing "verb"
+            # finds "basic-verbs"), but only for tokens that are long
+            # enough to be meaningful. A single character matches too
+            # many slugs — every slug containing that letter fires.
+            if len(tok) >= 2 and tok in slug_lower:
                 return True
             return False
 
