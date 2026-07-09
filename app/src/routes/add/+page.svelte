@@ -115,17 +115,7 @@
     }
     committing = true;
     try {
-      // Derive a stable id from the pinyin so re-saves don't churn
-      // filenames. ASCII letters/digits only; non-ASCII falls back
-      // to a date-based id.
-      const slug = pinyin
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-|-$/g, '');
-      const id = slug.length > 0 ? slug : new Date().toISOString().slice(0, 10).replace(/-/g, '');
-
       const resp = await commitSentence({
-        id,
         hanzi: hanzi.trim(),
         pinyin: pinyin.trim(),
         english: english.trim(),

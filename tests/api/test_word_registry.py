@@ -36,23 +36,20 @@ def _words_dir(vault_root: str | Path) -> Path:
 
 def test_ensure_word_creates_when_absent(tmp_path: Path) -> None:
     """A new hanzi/pinyin pair produces a file at
-    ``<vault>/units/words/chī.json`` with the correct shape."""
+    ``<vault>/units/words/<W1>.json`` with the correct shape (v0.5.2)."""
     vault = str(tmp_path)
     result = ensure_word_unit(vault, hanzi="吃", pinyin="chī")
 
-    # File exists at the canonical path.
-    word_path = _words_dir(vault) / "chī.json"
+    # After v0.5.2 the id is a typed counter, not the pinyin.
+    assert result["id"].startswith("W")
+    word_path = _words_dir(vault) / f"{result['id']}.json"
     assert word_path.is_file(), f"expected word file at {word_path}"
 
     # Returned dict matches the SPEC §2.2 word shape.
-    assert result["id"] == "chī"
     assert result["name"] == "吃"
     assert result["type"] == "word"
     assert result["properties"]["hanzi"] == "吃"
     assert result["properties"]["pinyin"] == "chī"
-
-    # AC2's invariant: the id is the tone-marked pinyin verbatim.
-    assert result["id"] == "chī"
 
 
 def test_ensure_word_idempotent(tmp_path: Path) -> None:
@@ -61,7 +58,7 @@ def test_ensure_word_idempotent(tmp_path: Path) -> None:
     dict is returned unchanged."""
     vault = str(tmp_path)
     first = ensure_word_unit(vault, hanzi="吃", pinyin="chī")
-    word_path = _words_dir(vault) / "chī.json"
+    word_path = _words_dir(vault) / f"{first['id']}.json"
     mtime_after_first = word_path.stat().st_mtime_ns
     content_after_first = word_path.read_bytes()
 
@@ -76,38 +73,33 @@ def test_ensure_word_idempotent(tmp_path: Path) -> None:
 
 
 def test_ensure_word_with_compound_pinyin(tmp_path: Path) -> None:
-    """A jieba compound token (e.g. ``口水`` -> ``kǒushuǐ``) is one word
-    unit, id = the compound pinyin verbatim, file at
-    ``kǒushuǐ.json``. This is the OQ3 invariant: one word per
-    contiguous jieba token."""
+    """A compound (multi-char hanzi) gets a typed C{n} id (v0.5.2)."""
     vault = str(tmp_path)
     result = ensure_word_unit(vault, hanzi="口水", pinyin="kǒushuǐ")
 
-    word_path = _words_dir(vault) / "kǒushuǐ.json"
+    assert result["id"].startswith("C")
+    word_path = _words_dir(vault) / f"{result['id']}.json"
     assert word_path.is_file(), f"expected word file at {word_path}"
-    assert result["id"] == "kǒushuǐ"
     assert result["name"] == "口水"
     assert result["properties"]["hanzi"] == "口水"
     assert result["properties"]["pinyin"] == "kǒushuǐ"
 
 
-def test_ensure_word_uses_pinyin_with_tones_as_id(tmp_path: Path) -> None:
-    """OQ2 invariant: ``chi`` (tone-stripped) and ``chī`` (tone-marked)
-    are DIFFERENT ids and produce DIFFERENT files. The function does
-    not normalize or de-tonify the id."""
+def test_ensure_word_distinguishes_pinyin_readings(tmp_path: Path) -> None:
+    """``chi`` (tone-stripped) and ``chī`` (tone-marked) produce two
+    separate word units with distinct typed ids (v0.5.2)."""
     vault = str(tmp_path)
 
     no_tone = ensure_word_unit(vault, hanzi="吃", pinyin="chi")
     with_tone = ensure_word_unit(vault, hanzi="吃", pinyin="chī")
 
-    # Distinct ids.
-    assert no_tone["id"] == "chi"
-    assert with_tone["id"] == "chī"
     assert no_tone["id"] != with_tone["id"]
+    assert no_tone["id"].startswith("W")
+    assert with_tone["id"].startswith("W")
 
-    # Distinct files.
-    assert (_words_dir(vault) / "chi.json").is_file()
-    assert (_words_dir(vault) / "chī.json").is_file()
+    # Both files exist.
+    assert (_words_dir(vault) / f"{no_tone['id']}.json").is_file()
+    assert (_words_dir(vault) / f"{with_tone['id']}.json").is_file()
     assert no_tone is not with_tone
 
 
@@ -131,8 +123,11 @@ def test_list_all_words_after_creates(tmp_path: Path) -> None:
 
     words = list_all_words(vault)
     ids = {w["id"] for w in words}
-    assert ids == {"chī", "kǒushuǐ", "wǒ"}
+    assert len(ids) == 3
     assert len(words) == 3
+    # Each id is a typed counter; the compound kǒushuǐ starts with C.
+    for w in words:
+        assert w["id"].startswith(("W", "C"))
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +164,7 @@ def test_ensure_word_english_and_meaning_stored(tmp_path: Path) -> None:
 
     # And the on-disk file reflects the same values (round-trip via
     # the unit_writer, not via the in-memory dict).
-    on_disk = read_unit(vault, "word", "chī")
+    on_disk = read_unit(vault, "word", result["id"])
     assert on_disk["properties"]["english"] == "to eat"
     assert on_disk["properties"]["meaning"] == "the act of eating, consuming food"
 
@@ -202,7 +197,7 @@ def test_fresh_word_has_required_top_level_fields(tmp_path: Path) -> None:
     vault = str(tmp_path)
     result = ensure_word_unit(vault, hanzi="吃", pinyin="chī")
 
-    assert result["id"] == "chī"
+    assert result["id"].startswith("W")
     assert result["type"] == "word"
     assert result["name"] == "吃"
     assert result["properties"]["groups"] == []
@@ -220,9 +215,12 @@ def test_fresh_word_persisted_file_is_valid_json(tmp_path: Path) -> None:
     vault = str(tmp_path)
     ensure_word_unit(vault, hanzi="吃", pinyin="chī")
 
-    raw = (_words_dir(vault) / "chī.json").read_text(encoding="utf-8")
+    # Find the actual file (id is a typed counter after v0.5.2)
+    files = list(_words_dir(vault).glob("*.json"))
+    assert len(files) == 1
+    raw = files[0].read_text(encoding="utf-8")
     parsed = json.loads(raw)
-    assert parsed["id"] == "chī"
+    assert parsed["id"].startswith("W")
     assert parsed["type"] == "word"
     assert parsed["name"] == "吃"
     assert parsed["properties"]["hanzi"] == "吃"

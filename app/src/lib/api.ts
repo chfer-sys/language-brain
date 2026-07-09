@@ -42,12 +42,9 @@ export interface ProposedLabels {
   antonyms: string[];
 }
 
-// Commit-sentence request (T31, AC25). Mirrors api/schemas.py's
-// CommitSentenceRequest. The id is the stable sentence slug the
-// frontend derives from pinyin (e.g. "wo-xihuan-chi") so re-saves
-// don't churn filenames.
+// Commit-sentence request. Mirrors api/schemas.py's CommitSentenceRequest.
+// The backend assigns the sentence id via a monotonic counter (S1, S2, ...).
 export interface CommitSentenceRequest {
-  id: string;
   hanzi: string;
   pinyin: string;
   english: string;

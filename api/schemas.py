@@ -58,47 +58,14 @@ class ProposeSentencesResponse(BaseModel):
 
 
 class CommitSentenceRequest(BaseModel):
-    """Body for the sentence-commit endpoint (T19).
+    """Body for the sentence-commit endpoint.
 
     The user has reviewed (and possibly edited) the AI's proposed
     labels and is now saving the sentence to the vault. The route
-    assigns the sentence id; the caller provides it as a stable
-    slug so re-saves don't churn filenames.
-
-    Fields
-    ------
-    id:
-        The sentence unit's id (e.g. a slugified version of the
-        pinyin like ``"wo-xihuan-chi"``, or a date-based id).
-        Must be a non-empty string; Pydantic enforces ``min_length=1``
-        and the route adds a strip-and-validate pass.
-    hanzi, pinyin, english, meaning:
-        Core sentence content. ``hanzi`` and ``pinyin`` are
-        required (per AC1). ``english`` and ``meaning`` default
-        to empty strings so the frontend can omit them when
-        author has not supplied them, but ``english`` is required
-        by AC6 and the route validates non-empty downstream.
-    words, word_refs:
-        Tokenization output. ``words`` are the hanzi tokens;
-        ``word_refs`` are the matching tone-marked-pinyin ids
-        (per OQ2). The route zips them when lengths match and
-        creates a word unit per entry in ``word_refs``.
-    groups:
-        Proposed group names. May mix bare slugs and
-        :class:`ProposedGroupOut` dicts (the AI client may
-        return either shape). The route passes the list
-        unchanged to ``ensure_groups_from_proposed``.
-    antonyms:
-        Tone-marked pinyin of word ids that this sentence's
-        words are antonyms of. Used by the connector's
-        opposite-pass to write symmetric ``opposite`` edges.
-    author_confirmed:
-        Defaults to ``True``. Frontend sets this to ``False``
-        if the user explicitly un-confirmed the AI's labels
-        before saving.
+    assigns the sentence id via a monotonic counter (``S1``, ``S2``,
+    ...); the caller no longer provides an id.
     """
 
-    id: str = Field(..., min_length=1, description="Stable id for the sentence unit.")
     hanzi: str = Field(..., min_length=1, description="The hanzi sentence.")
     pinyin: str = Field(..., min_length=1, description="Tone-marked pinyin for the sentence.")
     english: str = Field(default="", description="Short English gloss (per AC6).")
@@ -106,7 +73,7 @@ class CommitSentenceRequest(BaseModel):
     words: list[str] = Field(default_factory=list, description="Hanzi tokens from segmentation.")
     word_refs: list[str] = Field(
         default_factory=list,
-        description="Tone-marked-pinyin ids of word units referenced by this sentence.",
+        description="Tone-marked-pinyin of word units referenced by this sentence.",
     )
     groups: list[Union[ProposedGroupOut, str]] = Field(
         default_factory=list,

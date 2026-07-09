@@ -118,15 +118,15 @@ def test_hanzi_matches_existing_word_unit(tmp_path: Path) -> None:
 
 
 def test_hanzi_creates_new_word_unit_when_no_match(tmp_path: Path) -> None:
-    """A brand-new antonym hanzi triggers word-unit creation."""
+    """A brand-new antonym hanzi triggers word-unit creation (v0.5.2 typed id)."""
     word_id = resolve_antonym_to_word_id(str(tmp_path), "饱")
-    assert word_id == "bǎo"
+    assert word_id.startswith("W")
 
     # The new word file must exist with the right hanzi and pinyin.
-    path = tmp_path / "units" / "words" / "bǎo.json"
+    path = tmp_path / "units" / "words" / f"{word_id}.json"
     assert path.is_file()
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["id"] == "bǎo"
+    assert data["id"] == word_id
     assert data["properties"]["hanzi"] == "饱"
     assert data["properties"]["pinyin"] == "bǎo"
 

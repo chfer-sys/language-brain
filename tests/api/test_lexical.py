@@ -153,7 +153,7 @@ def test_add_lexical_edge_creates_connection(tmp_path: Path) -> None:
     word = ensure_word_unit(vault_root, hanzi="我", pinyin="wǒ")
 
     updated = add_lexical_edge_to_word(
-        vault_root, word_id="wǒ", sentence_id="2026-06-24-001"
+        vault_root, word_id=word["id"], sentence_id="2026-06-24-001"
     )
 
     connections = updated["connections"]
@@ -180,7 +180,7 @@ def test_add_lexical_edge_preserves_other_edges(tmp_path: Path) -> None:
     write_unit(vault_root, word)
 
     updated = add_lexical_edge_to_word(
-        vault_root, word_id="chī", sentence_id="2026-06-24-001"
+        vault_root, word_id=word["id"], sentence_id="2026-06-24-001"
     )
 
     connections = updated["connections"]
@@ -195,10 +195,10 @@ def test_add_lexical_edge_preserves_other_edges(tmp_path: Path) -> None:
 def test_add_lexical_edge_idempotent(tmp_path: Path) -> None:
     """Adding the same lexical edge twice → exactly one entry."""
     vault_root = str(tmp_path)
-    ensure_word_unit(vault_root, hanzi="我", pinyin="wǒ")
+    word = ensure_word_unit(vault_root, hanzi="我", pinyin="wǒ")
 
-    add_lexical_edge_to_word(vault_root, word_id="wǒ", sentence_id="S1")
-    updated = add_lexical_edge_to_word(vault_root, word_id="wǒ", sentence_id="S1")
+    add_lexical_edge_to_word(vault_root, word_id=word["id"], sentence_id="S1")
+    updated = add_lexical_edge_to_word(vault_root, word_id=word["id"], sentence_id="S1")
 
     lexical_edges = [
         e for e in updated["connections"] if e.get("kind") == "lexical"
@@ -211,11 +211,11 @@ def test_add_lexical_edge_updates_score(tmp_path: Path) -> None:
     """Re-adding with a different score overwrites the existing edge's
     score in place. There is still exactly one entry."""
     vault_root = str(tmp_path)
-    ensure_word_unit(vault_root, hanzi="我", pinyin="wǒ")
+    word = ensure_word_unit(vault_root, hanzi="我", pinyin="wǒ")
 
-    add_lexical_edge_to_word(vault_root, word_id="wǒ", sentence_id="S1", score=0.5)
+    add_lexical_edge_to_word(vault_root, word_id=word["id"], sentence_id="S1", score=0.5)
     updated = add_lexical_edge_to_word(
-        vault_root, word_id="wǒ", sentence_id="S1", score=0.9
+        vault_root, word_id=word["id"], sentence_id="S1", score=0.9
     )
 
     lexical_edges = [
@@ -232,20 +232,20 @@ def test_added_edge_visible_on_disk(tmp_path: Path) -> None:
     the write reached the filesystem.
     """
     vault_root = str(tmp_path)
-    ensure_word_unit(vault_root, hanzi="我", pinyin="wǒ")
+    word = ensure_word_unit(vault_root, hanzi="我", pinyin="wǒ")
 
     add_lexical_edge_to_word(
-        vault_root, word_id="wǒ", sentence_id="2026-06-24-001"
+        vault_root, word_id=word["id"], sentence_id="2026-06-24-001"
     )
 
-    on_disk_path = tmp_path / "units" / "words" / "wǒ.json"
+    on_disk_path = tmp_path / "units" / "words" / f"{word['id']}.json"
     assert on_disk_path.is_file(), f"expected word file at {on_disk_path}"
 
     with open(on_disk_path, encoding="utf-8") as fh:
         raw = json.load(fh)
 
     assert raw["type"] == "word"
-    assert raw["id"] == "wǒ"
+    assert raw["id"] == word["id"]
     connections = raw["connections"]
     assert connections == [
         {"to": "2026-06-24-001", "kind": "lexical", "score": 1.0}
@@ -255,9 +255,9 @@ def test_added_edge_visible_on_disk(tmp_path: Path) -> None:
 def test_add_lexical_edge_updates_timestamp(tmp_path: Path) -> None:
     """The ``updated`` field reflects the mutation."""
     vault_root = str(tmp_path)
-    ensure_word_unit(vault_root, hanzi="我", pinyin="wǒ")
+    word = ensure_word_unit(vault_root, hanzi="我", pinyin="wǒ")
 
-    updated = add_lexical_edge_to_word(vault_root, word_id="wǒ", sentence_id="S1")
+    updated = add_lexical_edge_to_word(vault_root, word_id=word["id"], sentence_id="S1")
 
     # ISO date format: YYYY-MM-DD. We don't assert on a specific date
     # (clock-dependent); we just assert the field is present and
@@ -269,14 +269,14 @@ def test_add_lexical_edge_updates_timestamp(tmp_path: Path) -> None:
 def test_add_lexical_edge_multiple_distinct_sentences(tmp_path: Path) -> None:
     """Distinct sentence ids produce distinct edges."""
     vault_root = str(tmp_path)
-    ensure_word_unit(vault_root, hanzi="我", pinyin="wǒ")
+    word = ensure_word_unit(vault_root, hanzi="我", pinyin="wǒ")
 
-    add_lexical_edge_to_word(vault_root, word_id="wǒ", sentence_id="S1")
-    add_lexical_edge_to_word(vault_root, word_id="wǒ", sentence_id="S2")
+    add_lexical_edge_to_word(vault_root, word_id=word["id"], sentence_id="S1")
+    add_lexical_edge_to_word(vault_root, word_id=word["id"], sentence_id="S2")
 
     from api.services.unit_writer import read_unit
 
-    final = read_unit(vault_root, "word", "wǒ")
+    final = read_unit(vault_root, "word", word["id"])
     lexical_targets = sorted(
         e["to"] for e in final["connections"] if e.get("kind") == "lexical"
     )
@@ -300,7 +300,7 @@ def test_add_lexical_edge_preserves_position_of_existing(tmp_path: Path) -> None
     write_unit(vault_root, word)
 
     updated = add_lexical_edge_to_word(
-        vault_root, word_id="chī", sentence_id="S1", score=0.9
+        vault_root, word_id=word["id"], sentence_id="S1", score=0.9
     )
 
     # The lexical edge should still be at index 1 (between group and
@@ -326,7 +326,7 @@ def test_add_lexical_edge_missing_word_raises(tmp_path: Path) -> None:
     vault_root = str(tmp_path)
     with pytest.raises(FileNotFoundError):
         add_lexical_edge_to_word(
-            vault_root, word_id="missing", sentence_id="S1"
+            vault_root, word_id="W9999", sentence_id="S1"
         )
 
 
@@ -341,11 +341,12 @@ def test_add_lexical_edge_rejects_non_word_unit(tmp_path: Path) -> None:
     # caller passing a sentence id where a word id was expected.
     words_dir = _P(vault_root) / "units" / "words"
     words_dir.mkdir(parents=True, exist_ok=True)
-    bogus_path = words_dir / "mistake.json"
+    bogus_id = "mistake"
+    bogus_path = words_dir / f"{bogus_id}.json"
     bogus_path.write_text(
         json.dumps(
             {
-                "id": "mistake",
+                "id": bogus_id,
                 "type": "sentence",  # wrong type for a file in words/
                 "name": "x",
                 "properties": {},
@@ -362,7 +363,7 @@ def test_add_lexical_edge_rejects_non_word_unit(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         add_lexical_edge_to_word(
-            vault_root, word_id="mistake", sentence_id="S1"
+            vault_root, word_id=bogus_id, sentence_id="S1"
         )
 
 
@@ -372,20 +373,20 @@ def test_add_lexical_edge_rejects_empty_ids(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         add_lexical_edge_to_word(vault_root, word_id="", sentence_id="S1")
     with pytest.raises(ValueError):
-        add_lexical_edge_to_word(vault_root, word_id="wǒ", sentence_id="")
+        add_lexical_edge_to_word(vault_root, word_id="W1", sentence_id="")
 
 
 def test_add_lexical_edge_rejects_non_numeric_score(tmp_path: Path) -> None:
     """Score must be a real number."""
     vault_root = str(tmp_path)
-    ensure_word_unit(vault_root, hanzi="我", pinyin="wǒ")
+    word = ensure_word_unit(vault_root, hanzi="我", pinyin="wǒ")
     with pytest.raises(ValueError):
         add_lexical_edge_to_word(
-            vault_root, word_id="wǒ", sentence_id="S1", score="high"  # type: ignore[arg-type]
+            vault_root, word_id=word["id"], sentence_id="S1", score="high"  # type: ignore[arg-type]
         )
     # bool is a subclass of int and would silently sneak through
     # otherwise; reject it explicitly.
     with pytest.raises(ValueError):
         add_lexical_edge_to_word(
-            vault_root, word_id="wǒ", sentence_id="S1", score=True  # type: ignore[arg-type]
+            vault_root, word_id=word["id"], sentence_id="S1", score=True  # type: ignore[arg-type]
         )

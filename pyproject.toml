@@ -42,6 +42,7 @@ include = ["api*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-ra -q"
 filterwarnings = [
   "ignore::DeprecationWarning",

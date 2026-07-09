@@ -120,6 +120,7 @@ from api.services.group_registry import add_member_to_group
 from api.services.indexer import Index
 from api.services.lexical import add_lexical_edge_to_word
 from api.services.segmenter import lcut as segmenter_lcut
+from api.services.id_counter import next_id
 from api.services.unit_writer import read_unit, unit_path, write_unit
 from api.services.word_registry import (
     backfill_word_english,
@@ -288,52 +289,52 @@ def _resolve_segmentation(
 def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
     """Persist a reviewed sentence and rebuild derived state.
 
-    See the module docstring for the full step-by-step save flow.
-    On success returns the saved id and the
-    :func:`api.services.connector.compute_connections` summary as
-    a flat ``dict[str, int]`` so the frontend can render counts.
+    The sentence id is assigned server-side via a monotonic counter
+    (``S1``, ``S2``, ...). The caller does not provide an id.
 
-    Raises
-    ------
-    HTTPException
-        ``422`` if ``hanzi`` / ``pinyin`` / ``id`` is empty after
-        strip. ``500`` on any unexpected exception (logged but
-        not echoed in the response body).
+    Raises 422 if ``hanzi`` or ``pinyin`` is empty.
     """
-    sentence_id = body.id.strip()
     hanzi = body.hanzi.strip()
     pinyin = body.pinyin.strip()
 
-    if not sentence_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="id must be a non-empty string",
-        )
     if not hanzi:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="hanzi must be a non-empty string",
-        )
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="hanzi must be a non-empty string")
     if not pinyin:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="pinyin must be a non-empty string",
-        )
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="pinyin must be a non-empty string")
 
     vault_root = settings.vault
     today = _today_iso()
 
     # ------------------------------------------------------------------
-    # Step 1 — write the sentence unit
+    # Step 1 — resolve segmentation + ensure word units → collect real ids
     # ------------------------------------------------------------------
-    # Reconcile the AI's segmentation with the user-curated segmenter
-    # (see ``_resolve_segmentation``). The segmenter is the authority
-    # for which tokens make up the sentence; the AI's word_refs is
-    # the authority for which pinyin maps to each token (because the
-    # AI has contextual tone disambiguation, e.g. 了 = ``liǎo`` in 了解).
-    words, word_refs = _resolve_segmentation(
+    words, word_refs_pinyin = _resolve_segmentation(
         hanzi, list(body.words), list(body.word_refs)
     )
+    paired_hanzi = _pair_word_refs_with_hanzi(word_refs_pinyin, words)
+    word_english = _slice_sentence_english(
+        body.english, list(words), list(word_refs_pinyin)
+    )
+
+    resolved_word_refs: list[str] = []
+    for pinyin_ref, word_hanzi, word_eng in zip(word_refs_pinyin, paired_hanzi, word_english):
+        if not isinstance(pinyin_ref, str) or not pinyin_ref.strip():
+            continue
+        word_unit = ensure_word_unit(
+            vault_root,
+            hanzi=word_hanzi,
+            pinyin=pinyin_ref.strip(),
+            english=word_eng,
+            meaning="",
+        )
+        word_id = word_unit["id"]
+        resolved_word_refs.append(word_id)
+        backfill_word_english(vault_root, word_id, word_eng)
+
+    # ------------------------------------------------------------------
+    # Step 2 — assign sentence id + write sentence unit
+    # ------------------------------------------------------------------
+    sentence_id = next_id(vault_root, "sentence")
 
     sentence_unit: dict[str, Any] = {
         "id": sentence_id,
@@ -345,21 +346,11 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
             "english": body.english,
             "meaning": body.meaning,
             "words": list(words),
-            "word_refs": list(word_refs),
-            # The sentence unit stores groups as bare slug strings so
-            # the on-disk shape matches the test fixtures and the
-            # connector's defensive readers don't have to handle a
-            # mix of strings and dicts.
+            "word_refs": resolved_word_refs,
             "groups": [
                 g.id if isinstance(g, ProposedGroupOut) else g
                 for g in body.groups
             ],
-            # Antonyms are stored in the user's submitted form (hanzi
-            # preferred, pinyin accepted for backward compat — see
-            # api.services.antonym_resolver). The on-disk array is
-            # the user-facing label set; the wiring into the
-            # connector's opposite edge uses the resolved word-unit
-            # ids below.
             "antonyms": normalize_antonyms_for_storage(list(body.antonyms)),
         },
         "connections": [],
@@ -370,102 +361,27 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
     write_unit(vault_root, sentence_unit)
 
     # ------------------------------------------------------------------
-    # Step 2 — ensure each referenced word has a unit file (AC2)
+    # Step 3 — lexical edges from each word to the sentence (AC3)
     # ------------------------------------------------------------------
-    paired_hanzi = _pair_word_refs_with_hanzi(word_refs, words)
-    # v0.4.1 T2: slice the sentence's english into per-word fragments
-    # so each new word unit inherits a starting english. The backfill
-    # helper is a no-op when the slot is already populated, so re-commits
-    # and user-edited words are untouched.
-    word_english = _slice_sentence_english(
-        body.english, list(words), list(word_refs)
-    )
-    for pinyin_ref, word_hanzi, word_eng in zip(
-        word_refs, paired_hanzi, word_english
-    ):
-        # Skip empty / whitespace pinyin defensively. The schema
-        # allows zero-length entries via the default_factory, and
-        # a stray blank here would fail ensure_word_unit's
-        # validation with a less actionable error.
-        if not isinstance(pinyin_ref, str) or not pinyin_ref.strip():
-            continue
-        ensure_word_unit(
-            vault_root,
-            hanzi=word_hanzi,
-            pinyin=pinyin_ref,
-            english=word_eng,
-            meaning="",
-        )
-        # If the word unit already existed (ensure_word_unit is a
-        # no-op on collision), backfill english into the empty slot.
-        # Cheap when english is already set — the helper returns
-        # immediately without a write.
-        backfill_word_english(vault_root, pinyin_ref, word_eng)
-
-    # ------------------------------------------------------------------
-    # Step 3 — add lexical edges from each word to the sentence (AC3)
-    # ------------------------------------------------------------------
-    for pinyin_ref in word_refs:
-        if not isinstance(pinyin_ref, str) or not pinyin_ref.strip():
-            continue
+    for word_id in resolved_word_refs:
         try:
             add_lexical_edge_to_word(
-                vault_root,
-                word_id=pinyin_ref,
-                sentence_id=sentence_id,
-                score=1.0,
+                vault_root, word_id=word_id, sentence_id=sentence_id, score=1.0
             )
         except FileNotFoundError:
-            # The word file should already exist from the previous
-            # loop, but a concurrent deletion or a malformed
-            # pinyin could leave it missing. Log and continue so
-            # one bad word doesn't kill the whole commit.
-            log.warning(
-                "word unit missing for pinyin=%r while adding lexical "
-                "edge to sentence=%r; skipping",
-                pinyin_ref,
-                sentence_id,
-            )
+            log.warning("word unit missing for id=%r; skipping lexical edge", word_id)
 
     # ------------------------------------------------------------------
-    # Step 3b — wire sentence-level antonyms into word-level antonym
-    # arrays so the connector's opposite pass can find the declared
-    # relation (AC15).
-    #
-    # The connector's opposite pass reads each word's
-    # ``properties.antonyms`` directly — it does not look at the
-    # sentence that introduced the relation. So for every
-    # ``(word_ref, antonym)`` pair declared on the sentence we
-    # append ``word_ref`` to ``antonym.properties.antonyms`` (when
-    # the antonym word already exists on disk). This sets up the
-    # one-sided reference; the connector's symmetry-sync pass will
-    # mirror it back into ``word_ref.properties.antonyms`` so the
-    # relation is symmetric in both the connection graph and the
-    # user-visible ``antonyms`` field.
-    #
-    # Why here, not inside the connector? Because the antonym wire
-    # is logically "author declared this when committing a
-    # sentence" — it belongs at the commit boundary, not in the
-    # connector's pure algorithmic layer. The connector stays
-    # focused on inferring edges from existing state.
+    # Step 3b — wire sentence-level antonyms into word-level antonym arrays
     # ------------------------------------------------------------------
-    # Pre-load word units once so the hanzi resolver doesn't do a
-    # disk scan per antonym entry.
     from api.services.word_registry import list_all_words
 
     existing_word_units = list_all_words(vault_root)
 
-    for pinyin_ref in word_refs:
-        if not isinstance(pinyin_ref, str) or not pinyin_ref.strip():
-            continue
+    for word_id in resolved_word_refs:
         for antonym_entry in body.antonyms:
             if not isinstance(antonym_entry, str) or not antonym_entry.strip():
                 continue
-            # Resolve the entry — hanzi ("饱") or pinyin ("bǎo") — to
-            # the actual word-unit id. Hanzi entries trigger a
-            # properties.hanzi lookup and a fresh-word create if no
-            # match; pinyin entries pass through unchanged (and the
-            # unknown-target skip below remains the v0.3 behavior).
             try:
                 antonym_id = resolve_antonym_to_word_id(
                     vault_root,
@@ -473,18 +389,11 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
                     existing_word_units=existing_word_units,
                 )
             except ValueError:
-                # Blank entry — defensive, shouldn't happen given the
-                # strip() check above.
                 continue
-            if antonym_id == pinyin_ref:
-                # Self-loop guard. A word can't be its own antonym.
+            if antonym_id == word_id:
                 continue
             antonym_path = unit_path(vault_root, "word", antonym_id)
             if not antonym_path.is_file():
-                # The antonym target hasn't been declared as a word
-                # unit yet. The connector's "skip unknown targets"
-                # rule would skip it anyway; we leave it for a
-                # later commit when the user adds the target word.
                 continue
             antonym_unit = read_unit(vault_root, "word", antonym_id)
             properties = antonym_unit.get("properties")
@@ -495,63 +404,36 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
             if not isinstance(existing, list):
                 existing = []
                 properties["antonyms"] = existing
-            if pinyin_ref not in existing:
-                existing.append(pinyin_ref)
+            if word_id not in existing:
+                existing.append(word_id)
                 antonym_unit["updated"] = today
                 write_unit(vault_root, antonym_unit)
 
     # ------------------------------------------------------------------
-    # Step 4 — ensure groups and add sentence to each (AC4, AC5)
+    # Step 4 — ensure groups and add sentence to each
     # ------------------------------------------------------------------
     normalized_groups = _normalize_groups_input(body.groups)
     group_units = ensure_groups_from_proposed(vault_root, normalized_groups)
     for group_unit in group_units:
         try:
             add_member_to_group(
-                vault_root,
-                group_id=group_unit["id"],
-                member_id=sentence_id,
+                vault_root, group_id=group_unit["id"], member_id=sentence_id
             )
         except (FileNotFoundError, ValueError):
-            # Group file should exist after ensure_groups_from_proposed;
-            # a malformed id would have raised earlier. Log and
-            # continue so a single bad group doesn't fail the commit.
-            log.warning(
-                "could not add sentence=%r to group=%r; skipping",
-                sentence_id,
-                group_unit.get("id"),
-            )
+            log.warning("could not add sentence=%r to group=%r", sentence_id, group_unit.get("id"))
 
     # ------------------------------------------------------------------
-    # Step 5 — run the connector (AC12/13/14/15)
+    # Step 5 — run the connector
     # ------------------------------------------------------------------
     try:
-        summary: dict[str, Any] = compute_connections(
-            vault_root,
-            embedder=_get_embedder(),
-        )
-    except Exception as exc:  # pragma: no cover - defensive
-        # The connector is best-effort: a partial-failure here
-        # should not undo the sentence write. Log and return a
-        # zero-summary so the frontend still sees a successful
-        # save. The reindex script can repair the edges later.
-        log.error(
-            "compute_connections failed during commit of sentence=%r: %s",
-            sentence_id,
-            type(exc).__name__,
-        )
-        summary = {
-            "sentences_touched": 0,
-            "words_touched": 0,
-            "lexical_pairs": 0,
-            "semantic_pairs": 0,
-            "group_pairs": 0,
-            "opposite_pairs": 0,
-            "skipped": 0,
-        }
+        summary: dict[str, Any] = compute_connections(vault_root, embedder=_get_embedder())
+    except Exception as exc:  # pragma: no cover
+        log.error("compute_connections failed for sentence=%r: %s", sentence_id, type(exc).__name__)
+        summary = {"sentences_touched": 0, "words_touched": 0, "lexical_pairs": 0,
+                    "semantic_pairs": 0, "group_pairs": 0, "opposite_pairs": 0, "skipped": 0}
 
     # ------------------------------------------------------------------
-    # Step 6 — update the FAISS index (AC9, R8)
+    # Step 6 — update the FAISS index
     # ------------------------------------------------------------------
     if body.meaning.strip():
         try:
@@ -559,16 +441,8 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
             embedder = _get_embedder()
             index.add(sentence_id, embedder.embed(body.meaning))
             index.save(vault_root)
-        except Exception as exc:  # pragma: no cover - defensive
-            # Index updates are best-effort; a failure here means
-            # semantic search won't find this sentence until the
-            # next reindex, but the unit file and the connections
-            # are still on disk.
-            log.error(
-                "FAISS index update failed for sentence=%r: %s",
-                sentence_id,
-                type(exc).__name__,
-            )
+        except Exception as exc:  # pragma: no cover
+            log.error("FAISS index update failed for sentence=%r: %s", sentence_id, type(exc).__name__)
 
     # ------------------------------------------------------------------
     # Step 7 — assemble the response
@@ -576,22 +450,8 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
     connections_summary: dict[str, int] = {
         str(k): int(v) for k, v in summary.items() if isinstance(v, (int, float))
     }
-
-    log.info(
-        "committed sentence id=%s hanzi=%r lexical_pairs=%s "
-        "semantic_pairs=%s group_pairs=%s opposite_pairs=%s",
-        sentence_id,
-        hanzi,
-        connections_summary.get("lexical_pairs", 0),
-        connections_summary.get("semantic_pairs", 0),
-        connections_summary.get("group_pairs", 0),
-        connections_summary.get("opposite_pairs", 0),
-    )
-
-    return CommitSentenceResponse(
-        id=sentence_id,
-        connections_summary=connections_summary,
-    )
+    log.info("committed sentence id=%s hanzi=%r", sentence_id, hanzi)
+    return CommitSentenceResponse(id=sentence_id, connections_summary=connections_summary)
 
 
 __all__ = ["router"]

@@ -23,6 +23,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from api.services.id_counter import next_id
 from api.services.unit_writer import read_unit, unit_path, write_unit
 
 log = logging.getLogger(__name__)
@@ -31,6 +32,21 @@ log = logging.getLogger(__name__)
 def _today_iso() -> str:
     """Return today's date as ``YYYY-MM-DD``."""
     return date.today().isoformat()
+
+
+def _find_word_by_hanzi_pinyin(
+    vault_root: str, hanzi: str, pinyin: str
+) -> dict | None:
+    """Scan word files for one matching ``(hanzi, pinyin)``.
+
+    ponytail: O(n) scan per lookup. Fine for <1000 words. Upgrade
+    path: SQLite ``word`` table lookup (v0.5.5).
+    """
+    for word in list_all_words(vault_root):
+        props = word.get("properties", {})
+        if props.get("hanzi") == hanzi and props.get("pinyin") == pinyin:
+            return word
+    return None
 
 
 def ensure_word_unit(
@@ -43,19 +59,14 @@ def ensure_word_unit(
     """If a word unit for this ``hanzi``/``pinyin`` does not exist,
     create one. Return the (possibly newly created) word unit dict.
 
-    The word's ``id`` is its tone-marked pinyin (e.g. ``"chī"``). The
-    word's ``name`` is the hanzi. The ``pinyin`` argument MUST include
-    tone marks; the id is the pinyin string verbatim. The caller is
-    expected to pass a single contiguous token (jieba-segmented); this
-    function does not segment.
+    The word's ``id`` is a typed counter id (``W1``, ``C1``, etc.)
+    assigned by :mod:`api.services.id_counter`. The filename matches
+    the id (``W1.json``). The word's ``name`` is the hanzi.
 
     Properties default to ``{hanzi, pinyin, english, meaning, groups: [],
-    antonyms: []}``. ``english`` and ``meaning`` default to the empty
-    string. ``connections`` is always an empty list on creation —
-    lexical/semantic/group/opposite edges are a separate concern (AC3+).
+    antonyms: []}``.
 
-    Side effect: writes a new word unit file at
-    ``<vault_root>/units/words/<pinyin>.json`` if it does not already
+    Side effect: writes a new word unit file if it does not already
     exist. If the file already exists, it is NOT overwritten; the
     existing dict is returned.
     """
@@ -68,19 +79,16 @@ def ensure_word_unit(
     if not isinstance(meaning, str):
         raise ValueError("meaning must be a string")
 
-    path = unit_path(vault_root, "word", pinyin)
-    if path.exists():
-        # Idempotent re-save: read the existing unit and return it.
-        # We deliberately do NOT re-write, so callers can rely on
-        # "ensure" being a true no-op on collision.
-        existing = read_unit(vault_root, "word", pinyin)
-        # Defensive: if the existing file is malformed (missing id),
-        # read_unit would have raised, so we know we have a dict.
+    existing = _find_word_by_hanzi_pinyin(vault_root, hanzi, pinyin)
+    if existing is not None:
         return existing
+
+    unit_type = "compound" if len(hanzi) >= 2 else "word"
+    word_id = next_id(vault_root, unit_type)
 
     today = _today_iso()
     word_unit: dict[str, Any] = {
-        "id": pinyin,
+        "id": word_id,
         "type": "word",
         "name": hanzi,
         "properties": {
@@ -102,45 +110,32 @@ def ensure_word_unit(
 
 def backfill_word_english(
     vault_root: str,
-    pinyin: str,
+    word_id: str,
     english: str,
 ) -> bool:
     """If the word unit exists and its ``properties.english`` is empty,
     set it to ``english`` and persist. Returns True iff a write
     happened.
 
-    Added in v0.4.1 T2: when a sentence is committed, the per-word
-    English slice from the sentence propagates to word units only
-    when the slot is empty (we never overwrite an existing value).
-    This is a soft auto-fill, not an authoritative rewrite — the
-    user (or a future per-word edit flow) can correct it later.
-
-    No-ops when:
-    * ``pinyin`` is empty/whitespace
-    * ``english`` is empty/whitespace (nothing to backfill)
-    * the word unit file doesn't exist
-    * the existing ``properties.english`` is already non-empty
-    * the file fails to read or write (errors are logged + swallowed
-      so the commit flow doesn't fail on a cosmetic field)
+    ``word_id`` is the typed id (e.g. ``"W1"``).
     """
-    if not isinstance(pinyin, str) or not pinyin.strip():
+    if not isinstance(word_id, str) or not word_id.strip():
         return False
     if not isinstance(english, str) or not english.strip():
         return False
-    path = unit_path(vault_root, "word", pinyin)
+    path = unit_path(vault_root, "word", word_id)
     if not path.is_file():
         return False
     try:
-        existing = read_unit(vault_root, "word", pinyin)
+        existing = read_unit(vault_root, "word", word_id)
     except (OSError, ValueError) as exc:
-        log.warning("backfill_word_english: read failed for %s: %s", pinyin, exc)
+        log.warning("backfill_word_english: read failed for %s: %s", word_id, exc)
         return False
     properties = existing.get("properties")
     if not isinstance(properties, dict):
         return False
     current = properties.get("english")
     if not isinstance(current, str) or current.strip():
-        # Already populated — never overwrite.
         return False
     properties["english"] = english.strip()
     existing["properties"] = properties
@@ -148,7 +143,7 @@ def backfill_word_english(
     try:
         write_unit(vault_root, existing)
     except OSError as exc:
-        log.warning("backfill_word_english: write failed for %s: %s", pinyin, exc)
+        log.warning("backfill_word_english: write failed for %s: %s", word_id, exc)
         return False
     return True
 

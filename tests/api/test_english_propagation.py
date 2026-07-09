@@ -164,6 +164,7 @@ def _seed_word(vault_root: Path, pinyin: str, hanzi: str, english: str = "") -> 
     from api.services.unit_writer import write_unit
 
     write_unit(str(vault_root), unit)
+    return unit
 
 
 def test_backfill_fills_empty_slot(tmp_path: Path) -> None:
@@ -229,21 +230,22 @@ def test_backfill_rejects_blank_pinyin(tmp_path: Path) -> None:
 
 def test_ensure_word_unit_writes_english_on_create(tmp_path: Path) -> None:
     """ensure_word_unit persists the english argument when the file is new."""
-    ensure_word_unit(str(tmp_path), hanzi="吃", pinyin="chī", english="eat")
+    word = ensure_word_unit(str(tmp_path), hanzi="吃", pinyin="chī", english="eat")
+    word_id = word["id"]
     from api.services.unit_writer import read_unit
 
-    word = read_unit(str(tmp_path), "word", "chī")
-    assert word["properties"]["english"] == "eat"
+    loaded = read_unit(str(tmp_path), "word", word_id)
+    assert loaded["properties"]["english"] == "eat"
 
 
 def test_ensure_word_unit_no_op_collision(tmp_path: Path) -> None:
     """A pre-existing word is NOT overwritten (existing contract)."""
-    _seed_word(tmp_path, "chī", "吃", english="user-edited")
+    word = _seed_word(tmp_path, "chī", "吃", english="user-edited")
     ensure_word_unit(str(tmp_path), hanzi="吃", pinyin="chī", english="AI guess")
     from api.services.unit_writer import read_unit
 
-    word = read_unit(str(tmp_path), "word", "chī")
-    assert word["properties"]["english"] == "user-edited"
+    loaded = read_unit(str(tmp_path), "word", word["id"])
+    assert loaded["properties"]["english"] == "user-edited"
 
 
 # ---------------------------------------------------------------------------
@@ -290,12 +292,13 @@ def test_commit_propagates_english_to_word_units(tmp_path: Path) -> None:
         # slice function falls back to whole-sentence english for
         # each slot (no 1:1 mapping between English particles and
         # Chinese tokens when the counts differ).
-        for pinyin in ("wǒ", "xiǎng", "chī"):
-            path = tmp_path / "units" / "words" / f"{pinyin}.json"
-            assert path.is_file(), f"missing word unit for {pinyin}"
+        words_dir = tmp_path / "units" / "words"
+        word_files = list(words_dir.glob("*.json"))
+        assert len(word_files) >= 3, f"expected 3 word files, found {len(word_files)}"
+        for path in word_files:
             data = json.loads(path.read_text(encoding="utf-8"))
             assert data["properties"]["english"] == "I want to eat", (
-                f"expected fallback 'I want to eat' for {pinyin}, got "
+                f"expected fallback 'I want to eat' for {data['id']}, got "
                 f"{data['properties']['english']!r}"
             )
     finally:

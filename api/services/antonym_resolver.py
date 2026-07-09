@@ -122,16 +122,12 @@ def resolve_antonym_to_word_id(
 
     entry = entry.strip()
 
-    if not _looks_like_hanzi(entry):
-        # Already pinyin (or some non-CJK label) — return as-is.
-        return entry
-
-    # Hanzi path. Resolve to an existing word unit if one matches.
     if existing_word_units is None:
         from api.services.word_registry import list_all_words
 
         existing_word_units = list_all_words(vault_root)
 
+    # Look up by hanzi OR pinyin — return the word unit's typed id (W{n}).
     matches: list[str] = []
     for w in existing_word_units:
         if not isinstance(w, dict):
@@ -139,31 +135,36 @@ def resolve_antonym_to_word_id(
         props = w.get("properties")
         if not isinstance(props, dict):
             continue
-        if props.get("hanzi") == entry and isinstance(w.get("id"), str):
+        if (props.get("hanzi") == entry or props.get("pinyin") == entry) and isinstance(
+            w.get("id"), str
+        ):
             matches.append(w["id"])
 
     if matches:
-        # Deterministic ordering for the rare multi-match case.
         matches.sort()
         return matches[0]
 
-    # No existing word — create one so the opposite edge has a target.
-    pinyin_id = _hanzi_to_pinyin_id(entry)
-    from api.services.word_registry import ensure_word_unit
+    # No existing word — if it's hanzi, create one.
+    if _looks_like_hanzi(entry):
+        pinyin_id = _hanzi_to_pinyin_id(entry)
+        from api.services.word_registry import ensure_word_unit
 
-    ensure_word_unit(
-        vault_root,
-        hanzi=entry,
-        pinyin=pinyin_id,
-        english="",
-        meaning="",
-    )
-    log.info(
-        "antonym hanzi=%r had no matching word unit; created new word id=%r",
-        entry,
-        pinyin_id,
-    )
-    return pinyin_id
+        word_unit = ensure_word_unit(
+            vault_root,
+            hanzi=entry,
+            pinyin=pinyin_id,
+            english="",
+            meaning="",
+        )
+        log.info(
+            "antonym hanzi=%r had no matching word unit; created new word id=%r",
+            entry,
+            word_unit["id"],
+        )
+        return word_unit["id"]
+
+    # Pinyin entry with no matching word — return as-is (connector skips unknown targets).
+    return entry
 
 
 def normalize_antonyms_for_storage(antonyms: list[str]) -> list[str]:
