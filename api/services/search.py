@@ -155,7 +155,7 @@ class SearchHit:
 #: ``types`` query parameter). Group units still have their own
 #: canonical endpoint at ``/api/groups/{id}`` — search just gets a
 #: lexical pass over their slugs and display names.
-_LEXICAL_TYPES: frozenset[str] = frozenset({"sentence", "word", "group"})
+_LEXICAL_TYPES: frozenset[str] = frozenset({"sentence", "word", "compound", "group"})
 
 
 # ---------------------------------------------------------------------------
@@ -412,8 +412,8 @@ def lexical_search(
     query or empty matches return ``[]``.
 
     ``types`` filters by unit type. ``None`` means all lexical types
-    (sentence + word + group). Pass any subset of
-    ``{"sentence", "word", "group"}`` to restrict. Any value outside
+    (sentence + word + compound + group). Pass any subset of
+    ``{"sentence", "word", "compound", "group"}`` to restrict. Any value outside
     the closed set makes the function return ``[]`` — this is the
     T20 guard against future callers passing unknown filters; it
     deliberately fails closed so a typo never silently returns wrong
@@ -439,7 +439,7 @@ def lexical_search(
     types:
         Optional filter. ``None`` means all lexical types;
         otherwise must be a list containing only values from
-        ``{"sentence", "word", "group"}``.
+        ``{"sentence", "word", "compound", "group"}``.
 
     Returns
     -------
@@ -1009,9 +1009,9 @@ def suggest_units(
 
     ``types`` filter
     ----------------
-    ``None`` (the default) means all three types — sentences,
-    words, and groups. Pass any subset of
-    ``{"sentence", "word", "group"}`` to restrict. An empty list
+    ``None`` (the default) means all four types — sentences,
+    words, compounds, and groups. Pass any subset of
+    ``{"sentence", "word", "compound", "group"}`` to restrict. An empty list
     or a list containing a value outside the closed set returns
     ``[]`` rather than raising — the route is responsible for
     rejecting bad input with 422.
@@ -1028,8 +1028,8 @@ def suggest_units(
         ``[1, 20]``. Default 5.
     types:
         Optional list of unit types to include. ``None`` means all
-        three; otherwise must be a subset of
-        ``{"sentence", "word", "group"}``.
+        four; otherwise must be a subset of
+        ``{"sentence", "word", "compound", "group"}``.
 
     Returns
     -------
@@ -1066,7 +1066,7 @@ def suggest_units(
     # ``[]`` rather than silently producing partial results.
     selected: set[str]
     if types is None:
-        selected = {"sentence", "word", "group"}
+        selected = {"sentence", "word", "compound", "group"}
     elif isinstance(types, list) and types:
         if any(not isinstance(t, str) for t in types):
             return []

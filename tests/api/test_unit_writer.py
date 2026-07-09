@@ -124,6 +124,31 @@ def test_group_round_trip(tmp_path: Path, example_group: dict) -> None:
     assert result == _without_updated(example_group)
 
 
+def test_compound_round_trip(tmp_path: Path) -> None:
+    """A compound unit round-trips correctly and is stored in words/."""
+    compound = {
+        "id": "C1",
+        "type": "compound",
+        "name": "口水",
+        "properties": {
+            "hanzi": "口水",
+            "pinyin": "kǒushuǐ",
+            "english": "drool",
+            "meaning": "saliva",
+            "groups": [],
+            "antonyms": [],
+        },
+        "connections": [],
+        "created": "2026-07-10",
+        "updated": "2026-07-10",
+        "author_confirmed": True,
+    }
+    result = round_trip(str(tmp_path), compound)
+    assert result == _without_updated(compound)
+    # Compound lives in the words/ directory.
+    assert unit_path(str(tmp_path), "compound", "C1") == tmp_path / "units" / "words" / "C1.json"
+
+
 # ---------------------------------------------------------------------------
 # Pretty-print / encoding tests.
 # ---------------------------------------------------------------------------

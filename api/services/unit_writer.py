@@ -1,12 +1,13 @@
 """Unit writer: read and write unit files to/from the local vault.
 
 The vault is a plain directory of pretty-printed JSON files, one per
-unit. There are exactly three unit types: ``sentence``, ``word``, and
-``group``. Each unit's canonical on-disk path is::
+unit. There are four unit types: ``sentence``, ``word``, ``compound``,
+and ``group``. Each unit's canonical on-disk path is::
 
     <vault_root>/units/<plural(unit_type)>/<id>.json
 
 where ``plural("sentence") = "sentences"``, ``plural("word") = "words"``,
+``plural("compound") = "words"`` (compounds share the words directory),
 ``plural("group") = "groups"``.
 
 Writes are atomic: the unit is serialized to a ``.tmp`` sibling and then
@@ -23,11 +24,12 @@ import os
 from pathlib import Path
 from typing import Any, Final
 
-VALID_UNIT_TYPES: Final[frozenset[str]] = frozenset({"sentence", "word", "group"})
+VALID_UNIT_TYPES: Final[frozenset[str]] = frozenset({"sentence", "word", "compound", "group"})
 
 _PLURAL_BY_TYPE: Final[dict[str, str]] = {
     "sentence": "sentences",
     "word": "words",
+    "compound": "words",
     "group": "groups",
 }
 
@@ -51,7 +53,7 @@ def unit_path(vault_root: str, unit_type: str, unit_id: str) -> Path:
         Filesystem path to the vault root (the directory that contains
         ``units/``). May be relative or absolute.
     unit_type:
-        One of ``"sentence"``, ``"word"``, ``"group"``. Any other value
+        One of ``"sentence"``, ``"word"``, ``"compound"``, ``"group"``. Any other value
         raises :class:`ValueError`.
     unit_id:
         The unit's stable id (slug for groups, ISO-date for sentences,
@@ -145,7 +147,7 @@ def read_unit(vault_root: str, unit_type: str, unit_id: str) -> dict:
     vault_root:
         Filesystem path to the vault root.
     unit_type:
-        One of ``"sentence"``, ``"word"``, ``"group"``.
+        One of ``"sentence"``, ``"word"``, ``"compound"``, ``"group"``.
     unit_id:
         The unit's stable id.
 
@@ -154,7 +156,7 @@ def read_unit(vault_root: str, unit_type: str, unit_id: str) -> dict:
     FileNotFoundError
         If the unit file does not exist.
     ValueError
-        If ``unit_type`` is not one of the three valid types.
+        If ``unit_type`` is not one of the valid types.
     """
     path = unit_path(vault_root, unit_type, unit_id)
     with open(path, encoding="utf-8") as fh:

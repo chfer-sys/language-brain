@@ -220,13 +220,13 @@ def add_lexical_edge_to_word(
 
     word_unit: dict[str, Any] = read_unit(vault_root, "word", word_id)
 
-    # Defensive: confirm the file we just read is actually a word unit.
-    # If someone hands us a sentence id by mistake, fail loudly rather
-    # than silently writing a lexical edge from a sentence.
-    if word_unit.get("type") != "word":
+    # Defensive: confirm the file we just read is a word unit (atomic or
+    # compound). If someone hands us a sentence id by mistake, fail loudly
+    # rather than silently writing a lexical edge from a sentence.
+    if word_unit.get("type") not in ("word", "compound"):
         raise ValueError(
             f"unit at id {word_id!r} has type "
-            f"{word_unit.get('type')!r}, expected 'word'"
+            f"{word_unit.get('type')!r}, expected 'word' or 'compound'"
         )
 
     connections = word_unit.get("connections")

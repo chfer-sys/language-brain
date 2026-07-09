@@ -73,7 +73,8 @@ def test_ensure_word_idempotent(tmp_path: Path) -> None:
 
 
 def test_ensure_word_with_compound_pinyin(tmp_path: Path) -> None:
-    """A compound (multi-char hanzi) gets a typed C{n} id (v0.5.2)."""
+    """A compound (multi-char hanzi) gets a typed C{n} id (v0.5.2)
+    and ``type='compound'``."""
     vault = str(tmp_path)
     result = ensure_word_unit(vault, hanzi="口水", pinyin="kǒushuǐ")
 
@@ -81,8 +82,19 @@ def test_ensure_word_with_compound_pinyin(tmp_path: Path) -> None:
     word_path = _words_dir(vault) / f"{result['id']}.json"
     assert word_path.is_file(), f"expected word file at {word_path}"
     assert result["name"] == "口水"
+    assert result["type"] == "compound"
     assert result["properties"]["hanzi"] == "口水"
     assert result["properties"]["pinyin"] == "kǒushuǐ"
+
+
+def test_ensure_word_1hanzi_is_word_type(tmp_path: Path) -> None:
+    """A 1-hanzi word gets ``type='word'`` (not 'compound')."""
+    vault = str(tmp_path)
+    result = ensure_word_unit(vault, hanzi="我", pinyin="wǒ")
+
+    assert result["id"].startswith("W")
+    assert result["type"] == "word"
+    assert result["name"] == "我"
 
 
 def test_ensure_word_distinguishes_pinyin_readings(tmp_path: Path) -> None:

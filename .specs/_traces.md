@@ -552,3 +552,36 @@ bidirectional mirror satisfies both).
 **623 passing, 1 skipped, 0 failing** (pytest exit 0). Branch
 `kickoff/v0.5.2-ids` is fully green. v0.5.2 complete.
 
+## 2026-07-10 — compound made a first-class type (4-type model)
+
+### What
+The SPEC defines a 4-type model (`word | compound | sentence | group`,
+lines 317 & 429), but the code assumed 3 types in several spots, and
+`word_registry.ensure_word_unit` hardcoded `type:"word"` even for
+compounds — so a newly created 2-hanzi word got a `C`-id but
+`type:"word"`, drifting from the `C1`–`C16` data (which a prior bite
+set to `compound`). Fixing `:92` alone would crash `write_unit` (it
+rejected `"compound"`), so the fixes were coupled. User confirmed the
+model: `W` = atomic 1-hanzi words (我/礼); `C` = compounds (婚礼/礼貌),
+the majority of Chinese vocabulary. The upcoming v0.5.3 dictionary
+(SUBTLEX-CH) will source both.
+
+### Fix
+- `unit_writer.py`: `VALID_UNIT_TYPES` + `_PLURAL_BY_TYPE`
+  (`compound`→`words`) + docstrings → 4 types.
+- `word_registry.py:92`: `"type": unit_type` (was hardcoded `"word"`).
+- `search.py` (route `_VALID_TYPES`) + `services/search.py`
+  (`_LEXICAL_TYPES` + default set + docstrings): added `compound`.
+- **Coupled crash fix:** `lexical.py:add_lexical_edge_to_word` hard-
+  checked `type=="word"` → would crash any commit involving a compound
+  (e.g. 吃饱 from segmenting 我吃饱). Widened to accept `word` OR
+  `compound` (defensive sentence rejection preserved).
+- Corrected a bug-pinning test (`test_commit_sentence_route.py:169`
+  asserted 2-hanzi 喜欢 as `type:"word"` → now `compound`).
+- New/extended tests: compound gets `type:"compound"`; 1-hanzi stays
+  `type:"word"`; compound round-trips through `write_unit`.
+
+### Test status
+**625 passing, 1 skipped, 0 failing** (pytest exit 0). The compound
+type model is now consistent end-to-end, in time for v0.5.3.
+

@@ -165,8 +165,10 @@ def test_commit_creates_word_units_from_word_refs(
 
     by_hanzi = {u["properties"]["hanzi"]: u for u in word_units}
     assert set(by_hanzi.keys()) == {"我", "喜欢"}
+    # 1-hanzi '我' is type:word; 2-hanzi '喜欢' is type:compound (v0.5.2).
+    assert by_hanzi["我"]["type"] == "word"
+    assert by_hanzi["喜欢"]["type"] == "compound"
     for hanzi, unit in by_hanzi.items():
-        assert unit["type"] == "word"
         assert unit["name"] == hanzi
         assert unit["properties"]["hanzi"] == hanzi
 

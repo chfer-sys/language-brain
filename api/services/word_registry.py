@@ -89,7 +89,7 @@ def ensure_word_unit(
     today = _today_iso()
     word_unit: dict[str, Any] = {
         "id": word_id,
-        "type": "word",
+        "type": unit_type,
         "name": hanzi,
         "properties": {
             "hanzi": hanzi,

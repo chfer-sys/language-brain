@@ -94,7 +94,7 @@ router = APIRouter(prefix="/api", tags=["search"])
 #: but duplicated here so the route can validate the CSV string
 #: before calling the service (and reject unknown values with
 #: 422 rather than silently returning []).
-_VALID_TYPES: frozenset[str] = frozenset({"sentence", "word", "group"})
+_VALID_TYPES: frozenset[str] = frozenset({"sentence", "word", "compound", "group"})
 
 #: The closed set of valid ``kinds`` filter values. T20 ignores
 #: the filter but parses it; T22/T23 will use the set to gate
