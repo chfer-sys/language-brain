@@ -90,7 +90,20 @@ def _build_id_map(vault_root: str) -> dict[str, str]:
 
 
 def _rewrite_references(obj, id_map: dict[str, str]):
-    """Recursively rewrite all string values that match an old id."""
+    """Recursively rewrite string values that match an old id.
+
+    ONLY rewrites the top-level ``id`` field and values under keys
+    that semantically hold references (word_refs, members, antonyms,
+    connections[].to). Does NOT rewrite values under ``properties.words``
+    (hanzi tokens) or ``properties.pinyin`` (syllables) — those are
+    user-authored text where an id-shaped substring is coincidental,
+    not a reference.
+
+    ponytail: key-aware rewrite beats naive recursion because the
+    reference vocabulary is small and the corruption vocabulary is
+    unbounded.
+    """
+    REFERENCE_KEYS = frozenset({"word_refs", "members", "antonyms"})
     if isinstance(obj, str):
         return id_map.get(obj, obj)
     if isinstance(obj, list):
@@ -100,8 +113,17 @@ def _rewrite_references(obj, id_map: dict[str, str]):
         for key, val in obj.items():
             if key == "id":
                 result[key] = id_map.get(val, val) if isinstance(val, str) else val
-            else:
+            elif key == "to" and isinstance(val, str):
+                # connections[].to — direct reference
+                result[key] = id_map.get(val, val)
+            elif key in REFERENCE_KEYS:
+                # Lists of references
                 result[key] = _rewrite_references(val, id_map)
+            else:
+                # All other keys: leave the value untouched (don't
+                # recursively walk into properties.words / .pinyin
+                # which contain hanzi tokens, not references).
+                result[key] = val
         return result
     return obj
 

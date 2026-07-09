@@ -406,3 +406,43 @@ GET /api/search?q=i+want+to+eat now returns:
 
 The user's literal request ("show 吃 when typing eat") now works.
 No more emotion/drinks/greetings false positives.
+
+## 2026-07-09 — v0.5.2 id migration
+
+### What happened
+
+The `scripts/migrate_assign_ids.py` script (one-shot, idempotent) ran on
+the live vault (35 words, 13 sentences, 12 groups). It assigned W/C/S
+ids and rewrote references in all files.
+
+### Bug discovered + fixed
+
+The first version of `_rewrite_references` used **naive recursion**:
+any string value anywhere in a JSON payload that happened to match an
+old id would be rewritten. This meant:
+
+- `properties.pinyin = "chī"` → rewritten to `properties.pinyin = "W3"`
+- `properties.words = ["了"]` → rewritten to `properties.words = ["W23"]`
+- `properties.hanzi = "了"` (in W13) → rewritten to `properties.hanzi = "W23"`
+
+The first version also assigned `了.json` to W13 (lex order), but the
+id_map's recursive pass rewrote that file's own hanzi field, so by the
+end, two units (W13 and W23) appeared to have hanzi="W23".
+
+### Repairs applied
+
+1. `scripts/migrate_assign_ids.py` rewritten with key-aware rewriting
+   (only `id`, `to`, `word_refs`, `members`, `antonyms` are touched).
+2. `scripts/repair_post_migration.py` re-derives `properties.words`
+   (via segmenter) and `properties.pinyin` (via pypinyin TONE) for any
+   sentence whose values look corrupted.
+3. `scripts/repair_word_units.py` re-derives `properties.pinyin` from
+   `properties.hanzi` for word units whose pinyin was rewritten.
+4. Manual fix: W13 (originally `了.json`) had hanzi rewritten to
+   "W23"; manually set back to hanzi="了", pinyin="le".
+5. Manual fix: W23 left as `[NEEDS REVIEW]` — original entry unknown.
+
+### Test status
+
+605 passing, 1 skipped (legacy cleanup test, unrelated).
+

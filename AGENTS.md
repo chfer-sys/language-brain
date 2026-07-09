@@ -1,6 +1,6 @@
 # language-brain project rules
 
-This file is project-level rules read by every agent (orchestrator, plan, coder, debug) working in this repo. The harness-level constitution lives at `~/.config/kilo/AGENTS.md` and is composed with this file.
+This file is project-level rules read by every agent (orchestrator, plan, executor, debug) working in this repo. The harness-level constitution lives at `~/.config/kilo/AGENTS.md` and is composed with this file.
 
 ## Project context
 
