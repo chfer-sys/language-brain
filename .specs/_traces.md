@@ -585,3 +585,48 @@ the majority of Chinese vocabulary. The upcoming v0.5.3 dictionary
 **625 passing, 1 skipped, 0 failing** (pytest exit 0). The compound
 type model is now consistent end-to-end, in time for v0.5.3.
 
+## 2026-07-10 — v0.5.3 start: SUBTLEX-CH research + Bite 1 (import)
+
+Branch: `kickoff/v0.5.3-dictionary` (off `f8a29b9`).
+
+### SUBTLEX-CH research findings (SPEC corrections)
+- **Use `subtlexch131210.zip`** (combined Dec-2010 file): free, no
+  registration, UTF-8, **tab-separated**, from UGent.
+- **Header:** `Word | Length | Pinyin | Pinyin.Input | W.million |
+  Dominant.PoS | ... | Eng.Tran`. First 2 lines are corpus metadata
+  (skip them).
+- **English: YES** via `Eng.Tran` — but it's a **2010 CC-CEDICT
+  snapshot** (stale; CC-BY-SA attribution needed if used).
+- **SPEC corrections needed:**
+  1. "~33,000 entries" is **wrong** — the paper has **99,121 word
+     types** (33,000 likely confused with 33.5M tokens, or the
+     CEDICT-english subset).
+  2. Pinyin is **tone-NUMBERS** (`ni3`); app uses tone-**marks** (OQ2)
+     → import converts.
+  3. Polyphonic pinyin is slash-separated (`le5//liǎo3`) → one
+     `word` row per reading (§5.8).
+- License CC-BY; attribution "Cai & Brysbaert, 2010 (PLoS ONE 5(6)
+  e10729)". Fresh-english companion: CC-CEDICT (future source).
+
+### Bite 1 — dictionary import (done)
+- `scripts/parsers/subtlex_csv.py` + `scripts/build_dictionary.py`
+  (`--source/--list`, consolidation §5.5, `main(argv=...)`).
+- Parser: isolated `COLUMN_MAP` (real columns), tab delimiter, skips 2
+  metadata lines, empty `Eng.Tran`→NULL, polyphonic slash split → one
+  `word` row per (hanzi,pinyin).
+- **`tone_number_to_mark`** helper (number→mark on the right vowel;
+  `nv`/`lv`→`nǚ`/`lǚ`); fixed two latent bugs (double-digit, `gui4`→`gì`
+  dropping a vowel → now `guì`).
+- `word` id scheme: W (1-hanzi) / C (2+), per-import `sort_key`, own id
+  space separate from `id_counters.json` (units).
+- Fixture `tests/fixtures/subtlex_ch_sample.txt` (real tab format).
+
+### Test status
+**635 passing, 1 skipped, 0 failing** (pytest exit 0).
+
+### Follow-ups (noted)
+- **Flaky `test_concurrent_connections`** in `test_db_storage.py` —
+  SQLite file-lock race (passes in isolation, fails on ordering).
+  Pre-existing, unrelated to v0.5.3. Worth stabilizing.
+- Update SPEC's "~33,000" → 99,121 and note pinyin tone-number origin.
+

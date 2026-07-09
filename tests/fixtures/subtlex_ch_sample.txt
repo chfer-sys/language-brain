@@ -1,0 +1,18 @@
+# SUBTLEX-CH frequency list (C) Brysbaert & Cai
+# Total characters: 9794144; total contexts: 5123344
+Word	Length	Pinyin	Pinyin.Input	W.million	Dominant.PoS	Dominant.PoS.Freq	All.PoS	All.PoS.Freq	WCount	log10W	W-CD	W-CD%	log10CD	Eng.Tran
+我	1	ni3	ni3	5234.5	V	4803.7	V	1.00	5234520	4.72	.	.	.	I (pronoun)
+吃	1	chi1	chi1	1023.0	V	987.2	V	1.00	1023003	4.01	.	.	.	to eat
+了	1	le5//liǎo3	le5//liao3	9876.2	PART	8765.1	PART/V	1.00	9876215	4.99	.	.	.	(aspect particle) / to finish
+了解	2	liao3 jie3	liao3 jie3	445.3	V	398.2	V/N	0.89	44530	4.65	.	.	.	to understand
+现在	2	xian4 zai4	xian4 zai4	2876.1	T	2654.3	T/ADV	0.92	287610	4.46	.	.	.	now
+世界	2	shi4 jie4	shi4 jie4	1987.6	N	1800.5	N/V	0.91	198760	4.30	.	.	.	world
+你好	2	ni3 hao3	ni3 hao3	1550.2	INTJ	1400.1	INTJ/V	0.90	155020	4.19	.	.	.	hello
+中国	2	zhong1 guo2	zhong1 guo2	1203.4	N	1100.2	N/OTHER	0.91	120340	4.08	.	.	.	China
+学习	2	xue2 xi2	xue2 xi2	876.3	V	800.4	V/N	0.91	87630	3.94	.	.	.	to study
+的	1	de5	de5	15000.0	PART	14000.0	PART	0.93	15000000	5.18	.	.	.	possessive / structural particle
+很	1	hen3	hen3	2100.0	ADV	1950.2	ADV/ADJ	0.93	2100000	4.32	.	.	.	very (adverb intensifier)
+人	1	ren2	ren2	3300.5	N	3100.1	N/CLAS	0.94	3300500	4.52	.	.	.	person / human
+是	1	shi4	shi4	9800.0	V	9200.0	V/OTHER	0.94	9800000	4.99	.	.	.	to be / is
+好	1	hao3	hao3	1750.8	ADJ	1600.2	ADJ/V/N	0.91	1750800	4.24	.	.	.	good / well
+朋友	2	peng2 you3	peng2 you3	2105.7	N	2000.1	N	0.95	2105700	4.32	.	.	.	friend
