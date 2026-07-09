@@ -1,32 +1,32 @@
 """Helpers for resolving ``antonyms`` entries to word-unit ids.
 
 The :class:`CommitSentenceRequest` carries ``antonyms`` as a list of
-strings. Per Note 3 of ``.specs/v0.4-backlog.md`` the canonical user-
-facing form is **hanzi** (e.g. ``["饱"]``), but the on-disk word-unit
-identifier scheme is **pinyin-with-tones** (e.g. ``"bǎo"``) per OQ2.
+strings. The canonical user-facing form is **hanzi** (e.g.  ``["饱"]``).
+Word-unit ids are **typed** (``W{n}`` / ``C{n}``) per v0.5.2.
 
 This module bridges the two: given a free-form antonym string, decide
-whether it's hanzi or pinyin, and return the word-unit id the
+whether it's hanzi or pinyin, and return the typed word-unit id the
 :mod:`api.routes.commit_sentence` save flow should use to wire the
-opposite edge.
+opposite edge. When a pinyin entry has no existing word unit, the
+resolver returns ``None``; callers are responsible for dropping such
+entries rather than storing them as ids.
 
 Resolution rules
 ----------------
 1. If the entry contains any CJK character (Unified Ideographs or
    extensions), treat it as **hanzi**:
-     a. Look up existing word units whose ``properties.hanzi`` equals
-        the entry. If exactly one match, return that word's id.
-     b. If multiple match (rare — e.g. two homograph words), return
-        the first by alphabetical id for determinism.
-     c. If no match, create a fresh word unit with ``id`` derived
-        from :func:`pypinyin.lazy_pinyin` of the hanzi (TONE style).
-        Return the new id. This keeps the invariant "every word
-        referenced by an antonym relation exists as a unit on disk"
-        without forcing the user to pre-save every word.
-2. Otherwise treat it as a **pinyin id** (existing v0.3 behavior).
-   Return the entry verbatim. If the word unit doesn't exist yet,
-   the connector's opposite pass will skip it (locked-in behavior
-   per :func:`api.services.connector._compute_opposite_edges`).
+      a. Look up existing word units whose ``properties.hanzi`` equals
+         the entry. If exactly one match, return that word's typed id.
+      b. If multiple match (rare — e.g. two homograph words), return
+         the first by alphabetical id for determinism.
+      c. If no match, create a fresh word unit with a typed id
+         (``W{n}``).  The ``pinyin`` property is derived via
+         :func:`pypinyin.lazy_pinyin` (TONE style); it is a *property*
+         only, not the unit id.
+2. Otherwise treat it as **pinyin**: look up an existing word whose
+   ``properties.pinyin`` matches, or whose typed ``id`` matches directly.
+   Return its typed id, or ``None`` if no match exists.  The caller must
+   drop ``None`` values rather than storing them as ids.
 """
 from __future__ import annotations
 
@@ -62,13 +62,13 @@ def _looks_like_hanzi(entry: str) -> bool:
 
 
 def _hanzi_to_pinyin_id(hanzi: str) -> str:
-    """Derive a pinyin id for ``hanzi`` using pypinyin's TONE style.
+    """Derive a pinyin string for ``hanzi`` using pypinyin's TONE style.
 
-    Used as the word-unit id when a sentence commits a brand-new
-    antonym hanzi that has no existing word file. Returns the tone-
-    marked pinyin string (e.g. ``"bǎo"`` for ``"饱"``). Falls back to
-    the hanzi verbatim if pypinyin can't decode the characters (rare
-    — pypinyin handles the whole CJK Unified block).
+    This is used only to fill the ``properties.pinyin`` field of a
+    newly-created word unit (NOT its id).  Returns the tone-marked
+    pinyin string (e.g. ``"bǎo"`` for ``"饱"``). Falls back to the
+    hanzi verbatim if pypinyin can't decode the characters (rare —
+    pypinyin handles the whole CJK Unified block).
 
     Imports pypinyin lazily so tests that don't exercise the create-
     new-word path don't pay the import cost.
@@ -87,7 +87,7 @@ def resolve_antonym_to_word_id(
     vault_root: str,
     entry: str,
     existing_word_units: Iterable[dict] | None = None,
-) -> str:
+) -> str | None:
     """Resolve a single ``antonyms[]`` entry to a word-unit id.
 
     See the module docstring for the resolution rules. The
@@ -110,12 +110,12 @@ def resolve_antonym_to_word_id(
 
     Returns
     -------
-    str
-        The word-unit id (pinyin-with-tones) to wire into the
-        :func:`api.services.connector._compute_opposite_edges`
-        pass. If the entry was already pinyin, returns it verbatim.
-        If it was hanzi, returns either the existing word's id or
-        a newly-created id.
+    str | None
+        The typed word-unit id (``W{n}`` / ``C{n}``) to wire into the
+        antonym edge. For hanzi entries, returns the existing word's id
+        or a newly-created id. For pinyin entries, returns the matching
+        word's id or ``None`` if no word has that pinyin — callers must
+        drop ``None`` rather than store it as an id.
     """
     if not isinstance(entry, str) or not entry.strip():
         raise ValueError("antonym entry must be a non-empty string")
@@ -135,9 +135,8 @@ def resolve_antonym_to_word_id(
         props = w.get("properties")
         if not isinstance(props, dict):
             continue
-        if (props.get("hanzi") == entry or props.get("pinyin") == entry) and isinstance(
-            w.get("id"), str
-        ):
+        if (props.get("hanzi") == entry or props.get("pinyin") == entry
+                or w.get("id") == entry) and isinstance(w.get("id"), str):
             matches.append(w["id"])
 
     if matches:
@@ -163,8 +162,8 @@ def resolve_antonym_to_word_id(
         )
         return word_unit["id"]
 
-    # Pinyin entry with no matching word — return as-is (connector skips unknown targets).
-    return entry
+    # Pinyin entry with no matching word — return None; caller must drop it.
+    return None
 
 
 def normalize_antonyms_for_storage(antonyms: list[str]) -> list[str]:

@@ -65,14 +65,20 @@ def test_normalize_non_list_returns_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
-# resolve_antonym_to_word_id — pinyin passthrough (v0.3 compat)
+# resolve_antonym_to_word_id — pinyin resolution
 # ---------------------------------------------------------------------------
 
 
-def test_pinyin_entry_returns_verbatim(tmp_path: Path) -> None:
-    """Pinyin entries are returned unchanged — backward compatibility."""
-    assert resolve_antonym_to_word_id(str(tmp_path), "bǎo") == "bǎo"
-    assert resolve_antonym_to_word_id(str(tmp_path), "è") == "è"
+def test_pinyin_no_match_returns_none(tmp_path: Path) -> None:
+    """Pinyin with no existing word unit returns None (not a raw id)."""
+    assert resolve_antonym_to_word_id(str(tmp_path), "bǎo") is None
+    assert resolve_antonym_to_word_id(str(tmp_path), "è") is None
+
+
+def test_pinyin_match_returns_word_id(tmp_path: Path) -> None:
+    """Pinyin that matches an existing word returns that word's typed id."""
+    _make_word(tmp_path, "W1", "饱", "bǎo")
+    assert resolve_antonym_to_word_id(str(tmp_path), "bǎo") == "W1"
 
 
 def test_empty_entry_raises(tmp_path: Path) -> None:
@@ -167,3 +173,9 @@ def test_hanzi_resolver_picks_deterministically_on_multi_match(tmp_path: Path) -
     assert out in {"bǎo", "bǎo-2"}
     # And we must get the same answer on every call (deterministic).
     assert resolve_antonym_to_word_id(str(tmp_path), "饱") == out
+
+
+def test_typed_id_lookup_returns_matching_word_id(tmp_path: Path) -> None:
+    """A typed word id (W{n}/C{n}) passed as entry resolves to itself."""
+    _make_word(tmp_path, "W1", "饱", "bǎo")
+    assert resolve_antonym_to_word_id(str(tmp_path), "W1") == "W1"

@@ -390,6 +390,8 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
                 )
             except ValueError:
                 continue
+            if antonym_id is None:
+                continue
             if antonym_id == word_id:
                 continue
             antonym_path = unit_path(vault_root, "word", antonym_id)

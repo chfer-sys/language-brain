@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 
 import numpy as np
@@ -415,3 +416,46 @@ def test_real_embedder_lazy_load() -> None:
     e = SentenceTransformerEmbedder()
     # No model loaded yet.
     assert e._model is None  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# v0.5.2 — stale-index guard
+# ---------------------------------------------------------------------------
+
+
+def test_rebuilt_index_contains_only_valid_sentence_ids() -> None:
+    """AC4/AC8 stale-index guard: after the v0.5.2 reindex, every id
+    in the FAISS index must be a valid ``S{n}`` that maps to an existing
+    ``vault/units/sentences/S{n}.json`` file.
+
+    If the index was not rebuilt after the id migration, it still holds
+    stale pre-migration ids (e.g. ``wo-xihuan-chi``, ``s-1``). Those do
+    not match the ``^S\\d+$`` pattern, so this test fails and signals
+    that ``scripts/reindex.py`` needs to be re-run.
+    """
+    from api.services.indexer import Index
+
+    vault_root = Path(__file__).parent.parent.parent / "vault"
+    idx = Index.load_or_empty(str(vault_root))
+
+    if len(idx) == 0:
+        pytest.skip("vault index is empty — reindex not yet run")
+
+    embedder = HashingEmbedder()
+    # Use a generic query that will hit multiple sentence embeddings.
+    query = embedder.embed("drooling food mouth water")
+    hits = idx.search(query, k=min(len(idx), 20))
+
+    s_pattern = re.compile(r"^S\d+$")
+    for hit in hits:
+        assert s_pattern.match(hit.unit_id), (
+            f"index contains non-S{{n}} id {hit.unit_id!r}; "
+            "index is stale — run scripts/reindex.py"
+        )
+        sentence_file = (
+            vault_root / "units" / "sentences" / f"{hit.unit_id}.json"
+        )
+        assert sentence_file.is_file(), (
+            f"index id {hit.unit_id!r} has no corresponding "
+            f"vault/units/sentences/{hit.unit_id}.json; index is stale"
+        )

@@ -17,6 +17,8 @@ vault/index/*.json
 vault/index/vault.db
 vault/index/vault.db-wal
 vault/index/vault.db-shm
+# v0.5.2 id counter — runtime state, incremented by next_id on every new unit
+vault/_meta/id_counters.json
 # v0.5.3 dictionary source CSV — gitignored; download at first-run
 vault/index/sources/
 vault/units/**/*.json
