@@ -630,3 +630,20 @@ Branch: `kickoff/v0.5.3-dictionary` (off `f8a29b9`).
   Pre-existing, unrelated to v0.5.3. Worth stabilizing.
 - Update SPEC's "~33,000" → 99,121 and note pinyin tone-number origin.
 
+### Bite 2 — Dictionary.segment (done)
+- `api/services/dictionary.py`: `WordToken` dataclass; `Dictionary`
+  (`__init__` opens conn via get_connection+init_schema, `_lookup` by
+  hanzi, `pick_reading` disambiguates polyphonic rows by sentence_pinyin
+  then frequency, `segment` = forward-maximum-match lengths 4→1).
+- `PARKED_HANZI` = 了/的/吗/呢/吧/啊/嘛/啦 → `parked=True`. Unknown char
+  → placeholder (source="unknown", id=None).
+- Local `_strip_tones` helper (marks+digits) for reading comparison.
+- Curated `tests/fixtures/segment_fixture.txt` (EC1–EC6 words + two 了
+  readings at different frequencies; 僻 absent).
+- Note: FMM matches compounds as whole units; `pick_reading` only runs
+  for ambiguous standalone matches (correct per SPEC pseudocode).
+
+### Test status
+**671 passing, 1 skipped, 0 failing** (pytest exit 0). Segmentation
+core complete; commit-path integration is Bite 3.
+

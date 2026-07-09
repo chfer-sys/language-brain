@@ -1,0 +1,17 @@
+# SUBTLEX-CH frequency list (C) Brysbaert & Cai
+# Total characters: 9999999; total contexts: 999999
+Word	Length	Pinyin	Pinyin.Input	W.million	Dominant.PoS	Dominant.PoS.Freq	All.PoS	All.PoS.Freq	WCount	log10W	W-CD	W-CD%	log10CD	Eng.Tran
+我	1	ni3	ni3	5234.5	V	4803.7	V	1.00	5234520	4.72	.	.	.	I (pronoun)
+吃	1	chi1	chi1	1023.0	V	987.2	V	1.00	1023003	4.01	.	.	.	to eat
+了	1	le5	le5	5000.0	PART	4500.0	PART	1.00	5000000	4.70	.	.	.	(aspect particle)
+了	1	liao3	liao3	9876.2	V	8765.1	V	1.00	9876215	4.99	.	.	.	to finish
+饭	1	fan4	fan4	450.2	N	420.1	N	0.95	450200	4.65	.	.	.	rice / meal
+了解	2	liao3 jie3	liao3 jie3	445.3	V	398.2	V/N	0.89	44530	4.65	.	.	.	to understand
+世界	2	shi4 jie4	shi4 jie4	1987.6	N	1800.5	N/V	0.91	198760	4.30	.	.	.	world
+上	1	shang4	shang4	8900.0	N	8500.0	N/ADP	0.94	8900000	4.95	.	.	.	up / on / above
+最	1	zui4	zui4	3200.5	ADV	3000.1	ADV/ADJ	0.93	3200500	4.51	.	.	.	most / -est
+现在	2	xian4 zai4	xian4 zai4	2876.1	T	2654.3	T/ADV	0.92	287610	4.46	.	.	.	now
+几	1	ji3	ji3	1560.3	PRON	1400.2	PRON/DET	0.91	1560300	4.19	.	.	.	several / how many
+点	1	dian3	dian3	2100.8	N	1950.2	N/V	0.91	2100800	4.32	.	.	.	point / dot / a little
+受不了	3	shou4 bu4 liao3	shou4 bu4 liao3	320.5	V	298.2	V	0.88	32050	4.51	.	.	.	cannot bear / can't stand
+这个	2	zhe4 ge4	zhe4 ge4	15000.0	SPEC	14000.0	SPEC/PRON	0.95	15000000	5.18	.	.	.	this one
