@@ -446,3 +446,109 @@ end, two units (W13 and W23) appeared to have hanzi="W23".
 
 605 passing, 1 skipped (legacy cleanup test, unrelated).
 
+## 2026-07-10 — v0.5.2 triage (id-migration gaps)
+
+### Trigger
+Resumed on `kickoff/v0.5.2-ids` to triage the W23 `[NEEDS REVIEW]`
+loose end left by the previous agent. Investigation expanded into a
+full audit of the migration's completeness.
+
+### Key facts established
+- **Vault data is gitignored** (`.gitignore:22` `vault/units/**/*.json`
+  + `vault/index/*`). Data lives on-disk only; `git grep`/`git ls-files`
+  see nothing. Must use real-file `grep`/`ls` to inspect it.
+- `vault/index/vault.db` + `vault.dump.sql` are generated on demand by
+  scripts (gitignored) — their absence is expected, not a bug.
+- W23 was an orphan ghost record (unrecoverable, data never in git) →
+  deleted. Not the real problem.
+
+### Root cause
+The v0.5.2 migration converted the DATA SNAPSHOT to typed ids, but the
+runtime write paths were already fixed in `47c20f5` (`next_id()` →
+`S{n}`/`W{n}`/`C{n}`). The user's `My-Reveiew.md` note ("saves as
+`k-qi-sh-nme`") was STALE (that log string no longer exists in code).
+The real gaps were migration incompleteness + one missing runtime guard.
+
+### Bites (each tested before proceeding; commit `1177cd7`)
+1. **W23** deleted (orphan).
+2. **Bite A — counter (P0):** `vault/_meta/id_counters.json` was
+   MISSING → `next_id()` defaulted to 0 on each process start → new
+   units would collide (`S1` again). `next_id()` already persists
+   (`fcntl` lock + `fsync`); seeded the file to `{W22,C16,S14,G12}`
+   (now `{W22,C16,S14,G12}` post-migration). Gitignored as runtime
+   state (consistent with gitignored vault data; fresh clone = empty).
+3. **Bite B — slug stragglers (P1):** the 6-file `客气什么` cluster
+   (created 2026-07-09) was never swept by the migration. Migrated via
+   `scripts/migrate_slug_stragglers.py` with KEY-AWARE rewrite (the
+   original naive recursion was the v0.5.2 bug): `k-qi-sh-nme`→`S14`,
+   `kèqi`/`shénme`/`suíbiàn`/`wúlǐ`→`C13`–`C16` (type flipped to
+   compound); cross-refs rewritten; `social-interaction` group kept as
+   slug BY DESIGN (SPEC OQ5). Verified no old-format id remains as a
+   reference anywhere in `vault/units/`. Idempotent.
+4. **Bite C — antonym resolver (P2):** `antonym_resolver.py:167`
+   returned raw pinyin verbatim for an unmatched pinyin antonym → slug
+   leak. Fixed: return `None` for unresolvable pinyin (caller drops it)
+   + added **id-lookup** so typed-id antonyms (`W{n}`) still resolve
+   (a typed id passed as an antonym is a supported feature; the first
+   attempt's `None`-only fix broke `test_commit_runs_connector_opposite_pairs`
+   and was corrected). Docstrings updated (were stale: described the
+   dead pinyin-id scheme).
+5. **Reindex:** rebuilt `vault/index/*` against clean `S1`–`S14`
+   sentence ids. Guard test `test_rebuilt_index_contains_only_valid_sentence_ids`
+   now passes.
+6. **Bite D — compound types:** `C1`–`C12` had `type:"word"` (migration
+   gave C-ids but never flipped type). Fixed via `scripts/fix_compound_types.py`
+   → all `C1`–`C16` now `type:"compound"`.
+
+### QA grade
+`qa-reviewer` graded the branch: **PASS** on all v0.5.2 id-migration
+acceptance criteria. Notes: criterion 3's `S00001` wording is stale
+(locked architecture = variable-width, no padding); criteria 5/9 not
+read-only-verifiable but #5 has a passing round-trip test.
+
+### Test status
+622 passing, 1 skipped, **1 failing**. The failure
+(`test_commit_with_hanzi_antonym_creates_new_word_unit`) is a SEPARATE
+pre-existing wiring-direction bug in `commit_sentence.py` step 3b
+(code wires source→target, test asserts target→source), exposed by
+v0.5.2, masked before by jieba tokenization. Tracked separately — not
+an id issue.
+
+### Follow-ups (tracked, not done)
+- **Antonym wiring-direction bug** (`commit_sentence.py` step 3b) — RESOLVED
+  (see "Wiring fix" below). Was the 1 remaining failing test.
+- **`unit_writer.VALID_UNIT_TYPES` = {sentence, word, group}** — does
+  NOT include `"compound"`. Runtime compound creation via `write_unit`
+  may be broken (migration/scripts bypass it with direct `json.dumps`).
+  Verify whether `ensure_word_unit` can create a 2-hanzi compound at
+  runtime; if not, add `"compound"` to the allowed set.
+- Original `migrate_assign_ids._rewrite_references` skips
+  `properties`/`connections` containers (code smell; no live data impact
+  since the typed data checked clean).
+- Consider startup auto-seeding of `id_counters.json` for robustness
+  (currently only the migration script seeds it; fine because vault
+  data is also gitignored).
+- `My-Reveiew.md` is now stale (slug issue fixed) — refresh or remove.
+
+## 2026-07-10 — Antonym wiring fix (suite fully green)
+
+### What
+`commit_sentence.py` step 3b wired antonyms one direction only
+(source id appended to the TARGET's `antonyms`). The connector's
+symmetry pass DOES mirror, but it re-reads words from disk — and step
+3b never persisted the SOURCE word, so the mirror couldn't see it.
+Result: `test_commit_with_hanzi_antonym_creates_new_word_unit` failed
+(it expects the TARGET id in a SOURCE's `antonyms`).
+
+### Fix
+Made step 3b a true two-way mirror (per AGENTS.md "two-way auto-mirror
+on write"): after appending the source id to the target, also append
+the target id to the source word's `antonyms` (with a duplicate guard).
+~20-line symmetric block, marked with a `ponytail:` comment. Satisfies
+all three antonym tests (which want opposite directions — only a
+bidirectional mirror satisfies both).
+
+### Test status
+**623 passing, 1 skipped, 0 failing** (pytest exit 0). Branch
+`kickoff/v0.5.2-ids` is fully green. v0.5.2 complete.
+

@@ -410,6 +410,26 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
                 existing.append(word_id)
                 antonym_unit["updated"] = today
                 write_unit(vault_root, antonym_unit)
+                # ponytail: bidirectional mirror — also update the SOURCE word's
+                # antonyms array so the relation is symmetric immediately (the
+                # connector's symmetry pass covers this too, but we need the
+                # source written back here so the on-disk state is consistent
+                # for the connector's next read).
+                word_path = unit_path(vault_root, "word", word_id)
+                if word_path.is_file():
+                    w_unit = read_unit(vault_root, "word", word_id)
+                    w_props = w_unit.get("properties")
+                    if not isinstance(w_props, dict):
+                        w_props = {}
+                        w_unit["properties"] = w_props
+                    w_existing = w_props.get("antonyms")
+                    if not isinstance(w_existing, list):
+                        w_existing = []
+                        w_props["antonyms"] = w_existing
+                    if antonym_id not in w_existing:
+                        w_existing.append(antonym_id)
+                        w_unit["updated"] = today
+                        write_unit(vault_root, w_unit)
 
     # ------------------------------------------------------------------
     # Step 4 — ensure groups and add sentence to each
