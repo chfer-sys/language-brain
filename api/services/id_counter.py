@@ -6,6 +6,11 @@ The id is ``f"{letter}{n}"`` with no padding — variable width.
 
 Counters are concurrent-safe via ``fcntl.flock`` and restart-safe
 because the file is written atomically with ``os.replace``.
+
+ponytail: W and C counters are vestigial for word/compound creation since
+v0.5.3 Bite 3a — dict ids (from the word table) are used via
+``ensure_word_unit_from_dict`` instead of the counter. The counters are
+still needed for S (sentence) and G (group) ids.
 """
 
 from __future__ import annotations

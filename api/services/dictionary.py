@@ -15,6 +15,9 @@ from api.services.db import get_connection, init_schema
 
 logger = logging.getLogger(__name__)
 
+# ponytail: module-level flag to emit the empty-dict warning only once per process.
+_empty_dict_warned = False
+
 # ---------------------------------------------------------------------------
 # Tone-strip helper
 # ---------------------------------------------------------------------------
@@ -95,6 +98,18 @@ class Dictionary:
         self._vault_root = vault_root
         self._conn = get_connection(vault_root)
         init_schema(self._conn)
+
+        # First-run warning: if word table is empty, warn once per process.
+        global _empty_dict_warned
+        if not _empty_dict_warned:
+            word_count = self._conn.execute("SELECT COUNT(*) FROM word").fetchone()[0]
+            if word_count == 0:
+                logger.warning(
+                    "Dictionary word table is empty — no dictionary has been imported.\n"
+                    "Segmentation will return all-unknown tokens.\n"
+                    "Run: python scripts/build_dictionary.py --source subtlex-ch --path vault/index/sources/subtlexch131210.txt"
+                )
+                _empty_dict_warned = True
 
     def close(self) -> None:
         self._conn.close()

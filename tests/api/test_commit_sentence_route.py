@@ -22,6 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.routes import commit_sentence as commit_sentence_route
+from api.services import ai_client as ai_client_module
 from api.services.embedder import HashingEmbedder
 from api.services.indexer import Index
 from api.services.unit_writer import read_unit, unit_path
@@ -630,3 +631,48 @@ def test_commit_word_unit_filename_is_dict_id(client: TestClient, tmp_path: Path
     # dict ids depend on import order but are still W/C prefixed).
     unit = read_unit(str(tmp_path), "word", word_id)
     assert unit["id"] == word_id
+
+
+# ---------------------------------------------------------------------------
+# AC 9 — No AI guessing for word/compound pinyin/english
+# ---------------------------------------------------------------------------
+
+
+def test_commit_does_not_call_ai_for_word_creation(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 9: committing a sentence never calls the AI client for word pinyin/english.
+
+    The dictionary is the sole source of word identity. This test proves
+    the invariant by monkeypatching the AI client to raise if called.
+    """
+    # Reset the AI client singleton so our patch takes effect.
+    ai_client_module.reset_ai_client_singleton()
+
+    call_count = [0]
+    original_propose = ai_client_module.HttpAIClient.propose_labels
+
+    def detect_call(self, *args, **kwargs):
+        call_count[0] += 1
+        raise AssertionError(
+            "AI client was called during commit — violates AC 9: "
+            "no AI guessing of pinyin or english for word/compound units"
+        )
+
+    monkeypatch.setattr(
+        ai_client_module.HttpAIClient, "propose_labels", detect_call
+    )
+
+    try:
+        body = _minimal_payload()
+        resp = client.post("/api/sentences/commit", json=body)
+        assert resp.status_code == 200, resp.text
+        assert call_count[0] == 0, (
+            f"AI client was called {call_count[0]} time(s) during commit"
+        )
+    finally:
+        # Restore original.
+        monkeypatch.setattr(
+            ai_client_module.HttpAIClient, "propose_labels", original_propose
+        )
+        ai_client_module.reset_ai_client_singleton()

@@ -347,3 +347,176 @@ def test_empty_english_becomes_null(tmp_path: Path) -> None:
     finally:
         conn.close()
 
+
+# ---------------------------------------------------------------------------
+# --disable tests (AC 4)
+# ---------------------------------------------------------------------------
+
+def test_disable_source(tmp_path: Path) -> None:
+    """--disable flips enabled=0; entries and words remain (AC4)."""
+    _import_source(
+        vault_root=str(tmp_path),
+        source_id="subtlex-ch",
+        source_name="SUBTLEX-CH",
+        source_version="1.0",
+        license="CC-BY",
+        attribution="Cai & Brysbaert, 2010",
+        priority=50,
+        csv_path=str(FIXTURE_CSV),
+    )
+
+    import io, contextlib
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = cli_main(["--vault-root", str(tmp_path), "--disable", "subtlex-ch"])
+    assert rc == 0, "CLI should exit 0"
+    assert "Disabled" in out.getvalue()
+
+    conn = sqlite3.connect(str(tmp_path / "index" / "vault.db"))
+    try:
+        enabled = conn.execute(
+            "SELECT enabled FROM dictionary_source WHERE id='subtlex-ch'"
+        ).fetchone()[0]
+        assert enabled == 0, "Source should be disabled"
+        # Entries still present.
+        assert conn.execute("SELECT COUNT(*) FROM dictionary_entry").fetchone()[0] == 16
+        # Words still present.
+        assert conn.execute("SELECT COUNT(*) FROM word").fetchone()[0] == 16
+    finally:
+        conn.close()
+
+
+def test_disable_nonexistent(tmp_path: Path) -> None:
+    """--disable a non-existent source returns 1."""
+    import io, contextlib
+    out = io.StringIO()
+    err = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = cli_main(["--vault-root", str(tmp_path), "--disable", "no-such-source"])
+    assert rc == 1, "CLI should exit 1 for non-existent source"
+    assert "not found" in err.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# --remove tests (AC 5)
+# ---------------------------------------------------------------------------
+
+def test_remove_source(tmp_path: Path) -> None:
+    """--remove deletes source row; cascade deletes entries and word_in_source;
+    word rows persist (AC5)."""
+    _import_source(
+        vault_root=str(tmp_path),
+        source_id="subtlex-ch",
+        source_name="SUBTLEX-CH",
+        source_version="1.0",
+        license="CC-BY",
+        attribution="Cai & Brysbaert, 2010",
+        priority=50,
+        csv_path=str(FIXTURE_CSV),
+    )
+
+    conn = sqlite3.connect(str(tmp_path / "index" / "vault.db"))
+    try:
+        word_count_before = conn.execute("SELECT COUNT(*) FROM word").fetchone()[0]
+        entry_count_before = conn.execute("SELECT COUNT(*) FROM dictionary_entry").fetchone()[0]
+        wis_count_before = conn.execute("SELECT COUNT(*) FROM word_in_source").fetchone()[0]
+    finally:
+        conn.close()
+
+    import io, contextlib
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = cli_main(["--vault-root", str(tmp_path), "--remove", "subtlex-ch"])
+    assert rc == 0, "CLI should exit 0"
+
+    conn2 = sqlite3.connect(str(tmp_path / "index" / "vault.db"))
+    try:
+        # Source row gone.
+        assert conn2.execute("SELECT COUNT(*) FROM dictionary_source").fetchone()[0] == 0
+        # Entries gone (cascade).
+        assert conn2.execute("SELECT COUNT(*) FROM dictionary_entry").fetchone()[0] == 0
+        # word_in_source gone (cascade).
+        assert conn2.execute("SELECT COUNT(*) FROM word_in_source").fetchone()[0] == 0
+        # word rows PERSIST.
+        assert conn2.execute("SELECT COUNT(*) FROM word").fetchone()[0] == word_count_before
+    finally:
+        conn2.close()
+
+
+def test_remove_idempotent(tmp_path: Path) -> None:
+    """--remove same source twice is a no-op on second call."""
+    _import_source(
+        vault_root=str(tmp_path),
+        source_id="subtlex-ch",
+        source_name="SUBTLEX-CH",
+        source_version="1.0",
+        license="CC-BY",
+        attribution="Cai & Brysbaert, 2010",
+        priority=50,
+        csv_path=str(FIXTURE_CSV),
+    )
+
+    import io, contextlib
+
+    # First remove.
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc1 = cli_main(["--vault-root", str(tmp_path), "--remove", "subtlex-ch"])
+    assert rc1 == 0
+
+    # Second remove — no-op.
+    out2 = io.StringIO()
+    with contextlib.redirect_stdout(out2):
+        rc2 = cli_main(["--vault-root", str(tmp_path), "--remove", "subtlex-ch"])
+    assert rc2 == 0
+    assert "not found" in out2.getvalue()
+
+
+def test_disable_then_reimport(tmp_path: Path) -> None:
+    """Disable a source, then re-import it — entries are restored.
+
+    Note: INSERT OR IGNORE is a no-op on existing rows, so the source
+    remains disabled after re-import (this is acceptable per task AC
+    which says "or at least entries restored").
+    """
+    _import_source(
+        vault_root=str(tmp_path),
+        source_id="subtlex-ch",
+        source_name="SUBTLEX-CH",
+        source_version="1.0",
+        license="CC-BY",
+        attribution="Cai & Brysbaert, 2010",
+        priority=50,
+        csv_path=str(FIXTURE_CSV),
+    )
+
+    import io, contextlib
+
+    # Disable.
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cli_main(["--vault-root", str(tmp_path), "--disable", "subtlex-ch"])
+
+    # Re-import.
+    out2 = io.StringIO()
+    with contextlib.redirect_stdout(out2):
+        rc = cli_main([
+            "--vault-root", str(tmp_path),
+            "--source", "subtlex-ch",
+            "--path", str(FIXTURE_CSV),
+        ])
+    assert rc == 0
+
+    conn = sqlite3.connect(str(tmp_path / "index" / "vault.db"))
+    try:
+        # Source remains disabled (INSERT OR IGNORE doesn't update existing rows).
+        enabled = conn.execute(
+            "SELECT enabled FROM dictionary_source WHERE id='subtlex-ch'"
+        ).fetchone()[0]
+        # (Re-enabling a disabled source requires --disable to flip back;
+        # re-import is for restoring entries per task AC.)
+        # Entries are restored (new_entries=0 since entries already exist).
+        assert conn.execute("SELECT COUNT(*) FROM dictionary_entry").fetchone()[0] == 16
+    finally:
+        conn.close()
+

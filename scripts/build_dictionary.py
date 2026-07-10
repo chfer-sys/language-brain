@@ -193,8 +193,90 @@ def _import_source(
         conn.close()
 
 
+def _disable_source(vault_root: str, source_id: str) -> dict:
+    """Disable a dictionary source (metadata toggle; entries preserved).
+
+    Returns {"source_id": ..., "disabled": True/False}.
+    """
+    conn = get_connection(vault_root)
+    try:
+        init_schema(conn)
+        conn.execute("PRAGMA foreign_keys = ON")
+        # Check if source exists.
+        row = conn.execute(
+            "SELECT id, name FROM dictionary_source WHERE id = ?",
+            (source_id,),
+        ).fetchone()
+        if row is None:
+            return {"source_id": source_id, "disabled": False}
+        conn.execute(
+            "UPDATE dictionary_source SET enabled = 0 WHERE id = ?",
+            (source_id,),
+        )
+        conn.commit()
+        return {"source_id": source_id, "name": row["name"], "disabled": True}
+    finally:
+        conn.close()
+
+
+def _remove_source(vault_root: str, source_id: str) -> dict:
+    """Remove a dictionary source (cascade deletes entries; word rows persist).
+
+    ponytail: after removal, word.english values may be stale (still show the
+    removed source's english). This is acceptable per SPEC §5.4 — re-importing
+    restores entries.
+
+    ponytail: the FK constraint on dictionary_entry.source_id does NOT have
+    ON DELETE CASCADE in the schema (v0.5.x locked). We delete child rows
+    manually before the parent so the cascade is implemented in code rather
+    than by the DB engine.
+
+    Returns {"source_id": ..., "entries_deleted": N, "word_in_source_deleted": M,
+             "words_remaining": K}.
+    """
+    conn = get_connection(vault_root)
+    try:
+        init_schema(conn)
+        conn.execute("PRAGMA foreign_keys = ON")
+        # Check if source exists.
+        row = conn.execute(
+            "SELECT id FROM dictionary_source WHERE id = ?",
+            (source_id,),
+        ).fetchone()
+        if row is None:
+            return {"source_id": source_id, "entries_deleted": 0,
+                    "word_in_source_deleted": 0, "words_remaining": -1}
+
+        # Count before deletion.
+        entries_before = conn.execute(
+            "SELECT COUNT(*) FROM dictionary_entry WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()[0]
+        wis_before = conn.execute(
+            "SELECT COUNT(*) FROM word_in_source WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()[0]
+
+        # Manually cascade: delete child rows before parent
+        # (schema FK lacks ON DELETE CASCADE; implemented in code).
+        conn.execute("DELETE FROM word_in_source WHERE source_id = ?", (source_id,))
+        conn.execute("DELETE FROM dictionary_entry WHERE source_id = ?", (source_id,))
+        conn.execute("DELETE FROM dictionary_source WHERE id = ?", (source_id,))
+        conn.commit()
+
+        words_remaining = conn.execute("SELECT COUNT(*) FROM word").fetchone()[0]
+        return {
+            "source_id": source_id,
+            "entries_deleted": entries_before,
+            "word_in_source_deleted": wis_before,
+            "words_remaining": words_remaining,
+        }
+    finally:
+        conn.close()
+
+
 def _list_sources(vault_root: str) -> None:
-    """Print all enabled sources with entry counts and priorities."""
+    """Print all sources with entry counts and priorities."""
     conn = get_connection(vault_root)
     try:
         init_schema(conn)
@@ -240,7 +322,17 @@ def _cli(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--list",
         action="store_true",
-        help="list enabled sources with entry counts and priorities",
+        help="list all sources with entry counts and priorities",
+    )
+    parser.add_argument(
+        "--disable",
+        metavar="SOURCE_ID",
+        help="disable a source (metadata toggle; entries preserved)",
+    )
+    parser.add_argument(
+        "--remove",
+        metavar="SOURCE_ID",
+        help="remove a source (cascade deletes entries; word rows persist)",
     )
     parser.add_argument(
         "--name",
@@ -272,6 +364,30 @@ def _cli(argv: list[str] | None = None) -> int:
 
     if args.list:
         _list_sources(args.vault_root)
+        return 0
+
+    if args.disable:
+        result = _disable_source(args.vault_root, args.disable)
+        if not result["disabled"]:
+            print(f"ERROR: source {args.disable!r} not found.", file=sys.stderr)
+            return 1
+        print(
+            f"Disabled source {result['name']!r}. "
+            f"Entries preserved; will be excluded from future re-consolidation."
+        )
+        return 0
+
+    if args.remove:
+        result = _remove_source(args.vault_root, args.remove)
+        if result["words_remaining"] == -1:
+            print(f"Source not found.")
+            return 0
+        print(
+            f"Removed source {result['source_id']!r}: "
+            f"{result['entries_deleted']} dictionary_entry rows deleted, "
+            f"{result['word_in_source_deleted']} word_in_source rows deleted. "
+            f"{result['words_remaining']} word rows persist."
+        )
         return 0
 
     if not args.source or not args.path:
