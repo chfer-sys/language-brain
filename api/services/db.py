@@ -121,7 +121,13 @@ def get_connection(vault_root: str) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 5000")
+    # ponytail: 30s busy timeout. WAL mode allows concurrent readers but a
+    # checkpoint still needs exclusive write access. When multiple threads
+    # open/close connections simultaneously the checkpoint can race with new
+    # connection opens. 5s was insufficient under load; 30s covers worst-case
+    # system load without masking a real bug. Production is single-threaded at
+    # startup so this has no runtime cost.
+    conn.execute("PRAGMA busy_timeout = 30000")
     conn.row_factory = sqlite3.Row
     return conn
 
