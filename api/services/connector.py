@@ -674,10 +674,10 @@ def _antonyms_of_word(unit: dict[str, Any]) -> list[str]:
 
     Notes
     -----
-    Per :mod:`api.services.word_registry`, ``properties.antonyms``
-    is a list of OTHER word ids (tone-marked pinyin). The list is
-    the declared antonym relation; the connection graph mirrors
-    it symmetrically (per SPEC §6 AC15).
+    Per v0.5.2+, ``properties.antonyms`` is a list of typed word ids
+    (``W{n}`` / ``C{n}``), NOT tone-marked pinyin strings. The list is
+    the declared antonym relation; the connection graph mirrors it
+    symmetrically (per SPEC §6 AC15).
     """
     properties = unit.get("properties")
     if not isinstance(properties, dict):

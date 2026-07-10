@@ -81,7 +81,10 @@ class CommitSentenceRequest(BaseModel):
     )
     antonyms: list[str] = Field(
         default_factory=list,
-        description="Pinyin-with-tones of antonym word ids.",
+        description="Hanzi strings (e.g. '饱') or bare pinyin (e.g. 'bǎo') "
+        "identifying antonym words. On commit these are resolved to "
+        "typed word-unit ids (W{n} / C{n}) and wired bidirectionally "
+        "into word.properties.antonyms.",
     )
     author_confirmed: bool = Field(
         default=True,
