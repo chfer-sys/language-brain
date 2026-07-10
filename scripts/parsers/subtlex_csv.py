@@ -50,9 +50,17 @@ def tone_number_to_mark(syllable: str) -> str:
     ``syllable`` is a single pinyin unit, e.g. ``ni3``, ``chuang1``, ``nv3``.
     Tone 5 / tone 0 = neutral → stripped of digit, returned unmarked.
     Handles ``v`` as a stand-in for ``ü`` (common in some pinyin conventions).
+    Also handles space-separated compound readings (e.g. ``liao3 jie3``);
+    each syllable is converted individually and re-joined with spaces.
 
     Returns the syllable with the tone mark on the correct vowel.
     """
+    # ponytail: SUBTLEX-CH uses space-separated compound readings (e.g.
+    # "liao3 jie3" for 了解). Split, convert each syllable, re-join.
+    if " " in syllable:
+        syllables = syllable.split(" ")
+        return " ".join(tone_number_to_mark(s) for s in syllables)
+
     # Strip tone-number suffix.
     m = re.match(r"^(.+?)(\d)$", syllable)
     if not m:
@@ -116,7 +124,7 @@ if __name__ == "__main__":
 _ALT_COLUMNS: dict[str, list[str]] = {
     "hanzi": ["Word", "Hanzi", "word"],
     "pinyin": ["Pinyin", "pinyin", "Portuguese"],
-    "english": ["Eng.Tran", "English", "english", "Translation"],
+    "english": ["Eng.Tran", "Eng.Tran.", "English", "english", "Translation"],
     "frequency": ["W.million", "Frequency", "frequency", "Freq"],
     "part_of_speech": ["Dominant.PoS", "PoS", "POS", "PartOfSpeech"],
 }
@@ -150,7 +158,7 @@ def _build_column_indices(header: list[str]) -> dict[str, int]:
 def _open_csv(path: str) -> tuple[Path, str]:
     """Open a TSV file, trying utf-8 then gbk. Returns (path, encoding)."""
     p = Path(path)
-    for enc in ("utf-8", "utf-8-sig", "gbk", "gb2312", "latin-1"):
+    for enc in ("utf-8-sig", "utf-8", "gbk", "gb2312", "latin-1"):
         try:
             p.read_text(encoding=enc)
             return p, enc
@@ -239,10 +247,20 @@ def parse(path: str) -> list[dict[str, Any]]:
         return []
 
     # Skip leading non-header lines when tab-delimited.
-    # Real SUBTLEX-CH has 2 metadata lines before the header.
-    # ponytail: skip exactly 2 lines when delimiter is tab; this is safe
-    # because the header is always the 3rd line in that format.
-    start = 3 if delimiter == "\t" else 0
+    # SUBTLEX-CH files vary: some have comment/metadata lines before the header.
+    # ponytail: detect header by checking for tabs in the RAW lines (before csv parsing).
+    # Metadata lines (comments, total-count lines) typically have no tabs.
+    if delimiter == "\t":
+        header_row = 0
+        raw_lines = text.splitlines()
+        while header_row < len(raw_lines) and "\t" not in raw_lines[header_row]:
+            header_row += 1
+        if header_row >= len(raw_lines):
+            logger.warning("No tab-delimited header found in %r", path)
+            return []
+        start = header_row + 1
+    else:
+        start = 0
     header = [h.strip() for h in rows[start - 1]] if start else [h.strip() for h in rows[0]]
 
     try:
