@@ -130,6 +130,32 @@ describe('AC26 — Unit detail page', () => {
     target.remove();
   });
 
+  it('renders groups as read-only chips, not CSV text', async () => {
+    mockPageState.params = { id: 's-1' };
+    mockGetUnit.mockResolvedValue(FAKE_SENTENCE);
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(UnitPage, { target });
+
+    await settle(target);
+
+    // Groups should render as chips (chip-readonly spans inside chips-readonly).
+    const chipsReadonly = target.querySelector('.chips-readonly');
+    expect(chipsReadonly).toBeTruthy();
+    // FAKE_SENTENCE.properties.groups = ['food']
+    const groupChip = target.querySelector('[data-testid="prop-groups-chip-food"]');
+    expect(groupChip).toBeTruthy();
+    expect(groupChip?.textContent).toContain('food');
+    // The dt/dd for groups should NOT contain a comma-separated list.
+    const props = target.querySelector('[data-testid="unit-properties"]');
+    // Only 'food' shows, no stray comma CSV.
+    expect(props?.textContent).not.toContain('food,');
+    expect(props?.textContent).not.toContain(', food');
+
+    unmount(component);
+    target.remove();
+  });
+
   it('groups connections by kind with a section per kind', async () => {
     mockPageState.params = { id: 's-1' };
     mockGetUnit.mockResolvedValue(FAKE_SENTENCE);

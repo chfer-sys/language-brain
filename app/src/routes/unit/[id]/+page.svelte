@@ -64,7 +64,7 @@
         { key: 'meaning' },
         { key: 'words', renderAs: 'csv' },
         { key: 'word_refs', renderAs: 'csv' },
-        { key: 'groups', renderAs: 'csv' },
+        { key: 'groups', renderAs: 'chips' },
         // Antonyms are bare hanzi characters per Note 3 / T2; render
         // them as chips for visual scanability.
         { key: 'antonyms', renderAs: 'chips' }
@@ -75,7 +75,7 @@
         { key: 'pinyin' },
         { key: 'english' },
         { key: 'meaning' },
-        { key: 'groups', renderAs: 'csv' },
+        { key: 'groups', renderAs: 'chips' },
         { key: 'antonyms', renderAs: 'chips' }
       );
     } else if (u.type === 'group') {
@@ -134,7 +134,7 @@
             {#if renderAs === 'chips' && Array.isArray(value)}
               <span class="chips-readonly">
                 {#each value as chip (chip)}
-                  <span class="chip-readonly" data-testid="prop-antonym-chip-{chip}">{chip}</span>
+                  <span class="chip-readonly" data-testid="prop-{key}-chip-{chip}">{chip}</span>
                 {/each}
               </span>
             {:else}

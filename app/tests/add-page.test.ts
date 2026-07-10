@@ -92,7 +92,7 @@ describe('AC25 — Add-sentence page propose-labels flow', () => {
     const pinyin = target.querySelector('[data-testid="pinyin-input"]') as HTMLInputElement;
     expect(pinyin.value).toBe(FAKE_LABELS.pinyin);
 
-    // All seven editable fields populated.
+    // Six traditional text inputs + GroupChips (which renders its own <input>).
     const inputs = target.querySelectorAll('[data-testid="proposed-form"] input');
     expect(inputs.length).toBe(7);
 
@@ -427,5 +427,120 @@ describe('AC25 — Add-sentence page propose-labels flow', () => {
     expect(sent).toContain('饱');
     expect(sent).toContain('冷');
     expect(sent).not.toContain('热');
+  });
+
+  // ---------------------------------------------------------------------
+  // Group chips (TBD): chip editor with autocomplete
+  // ---------------------------------------------------------------------
+
+  it('renders the groups field as a chip editor, not a CSV text input', async () => {
+    mockProposeLabels.mockResolvedValue(FAKE_LABELS);
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+
+    // Groups field is now a chip editor (GroupChips component).
+    expect(target.querySelector('[data-testid="groups-editor"]')).toBeTruthy();
+    expect(target.querySelector('[data-testid="groups-input"]')).toBeTruthy();
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('seeds the chip editor from the AI\'s proposed group slugs', async () => {
+    mockProposeLabels.mockResolvedValue(FAKE_LABELS);
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+
+    // FAKE_LABELS.groups = [{ id: 'reactions', ... }, { id: 'food', ... }]
+    expect(target.querySelector('[data-testid="groups-chip-reactions"]')).toBeTruthy();
+    expect(target.querySelector('[data-testid="groups-chip-food"]')).toBeTruthy();
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('sends group slug ids (not CSV strings) to commitSentence', async () => {
+    mockProposeLabels.mockResolvedValue(FAKE_LABELS);
+    mockCommitSentence.mockResolvedValue({
+      id: 's-1',
+      saved_at: '2026-06-27',
+      word_ids_created: [],
+      group_ids_created: []
+    });
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+    await clickButton(target, 'save-btn');
+
+    expect(mockCommitSentence).toHaveBeenCalledTimes(1);
+    const body = mockCommitSentence.mock.calls[0][0] as Record<string, unknown>;
+    // Groups should be an array of slug strings, not CSV.
+    expect(body.groups).toEqual(['reactions', 'food']);
+    expect(typeof body.groups).toBe('object');
+    expect(Array.isArray(body.groups)).toBe(true);
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('lets the user remove a group chip by clicking its × button', async () => {
+    mockProposeLabels.mockResolvedValue(FAKE_LABELS);
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+
+    expect(target.querySelector('[data-testid="groups-chip-reactions"]')).toBeTruthy();
+
+    const chip = target.querySelector('[data-testid="groups-chip-reactions"]') as HTMLElement;
+    const removeBtn = chip.querySelector('button.chip-remove') as HTMLButtonElement;
+    removeBtn.click();
+    await tick();
+
+    expect(target.querySelector('[data-testid="groups-chip-reactions"]')).toBeNull();
+    expect(target.querySelector('[data-testid="groups-chip-food"]')).toBeTruthy();
+
+    unmount(component);
+    target.remove();
+  });
+
+  it('lets the user type a new group name and press Enter to create a chip', async () => {
+    mockProposeLabels.mockResolvedValue(FAKE_LABELS);
+
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(AddPage, { target });
+
+    await setInputValue(target, '[data-testid="hanzi-input"]', '我流口水了');
+    await clickButton(target, 'propose-btn');
+
+    const chipInput = target.querySelector('[data-testid="groups-input"]') as HTMLInputElement;
+    chipInput.value = 'emotions';
+    chipInput.dispatchEvent(new Event('input', { bubbles: true }));
+    chipInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await tick();
+
+    // Slugified from 'emotions' → 'emotions'
+    expect(target.querySelector('[data-testid="groups-chip-emotions"]')).toBeTruthy();
+
+    unmount(component);
+    target.remove();
   });
 });

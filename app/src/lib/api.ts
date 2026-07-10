@@ -104,8 +104,14 @@ export async function search(q: string, opts: { kinds?: ConnectionKind[]; types?
   return res.json();
 }
 
-export async function suggest(q: string, limit = 5, signal?: AbortSignal): Promise<SuggestResult[]> {
+export async function suggest(
+  q: string,
+  limit = 5,
+  signal?: AbortSignal,
+  types?: string[]
+): Promise<SuggestResult[]> {
   const params = new URLSearchParams({ q, limit: String(limit) });
+  if (types?.length) params.set('types', types.join(','));
   const res = await fetch(`${API_BASE}/api/search/suggest?${params}`, { signal });
   if (!res.ok) throw new Error(`suggest failed: ${res.status}`);
   return res.json();

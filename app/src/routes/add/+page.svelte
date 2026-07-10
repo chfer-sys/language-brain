@@ -2,10 +2,13 @@
   import {
     proposeLabels,
     commitSentence,
+    suggest,
     type ProposedLabels,
     type ProposedGroup
   } from '$lib/api';
   import AntonymChips from '$lib/components/AntonymChips.svelte';
+  import GroupChips from '$lib/components/GroupChips.svelte';
+  import { onMount } from 'svelte';
 
   let hanzi = '';
   let note = '';
@@ -24,7 +27,16 @@
   let meaning = '';
   let wordsCsv = '';
   let wordRefsCsv = '';
-  let groupsCsv = '';
+  let groupSlugs: string[] = [];
+  let existingGroups: { id: string; display_name: string }[] = [];
+
+  onMount(async () => {
+    const resp = await suggest('', 50, undefined, ['group']);
+    existingGroups = resp.map((r) => ({
+      id: r.id,
+      display_name: r.name || r.id,
+    }));
+  });
   // Antonyms is a string[] of bare hanzi (Note 3 / T2). Edited via
   // the AntonymChips component; seeded from the AI's proposed list.
   let antonyms: string[] = [];
@@ -40,16 +52,6 @@
       .filter((s) => s.length > 0);
   }
 
-  function groupsToCsv(groups: ProposedGroup[]): string {
-    return groups.map((g) => g.display_name || g.id).join(', ');
-  }
-
-  function groupsFromCsv(csv: string): ProposedGroup[] {
-    return csvToArray(csv).map((name) => {
-      const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-      return { id: slug, display_name: name, description: '' };
-    });
-  }
 
   function resetProposalState() {
     proposed = null;
@@ -58,7 +60,7 @@
     meaning = '';
     wordsCsv = '';
     wordRefsCsv = '';
-    groupsCsv = '';
+    groupSlugs = [];
     antonyms = [];
     // Note: deliberately does NOT reset `error` — callers that use this
     // helper on success want to clear error too; callers on failure
@@ -85,7 +87,10 @@
       meaning = resp.meaning;
       wordsCsv = arrayToCsv(resp.words);
       wordRefsCsv = arrayToCsv(resp.word_refs);
-      groupsCsv = groupsToCsv(resp.groups);
+      groupSlugs = resp.groups.map((g) => {
+        const slug = g.id || g.display_name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+        return slug;
+      });
       // Antonyms arrive as hanzi from the AI (per the system prompt).
       // De-duplicate so the chip editor doesn't show duplicates.
       antonyms = Array.from(new Set(resp.antonyms));
@@ -100,7 +105,7 @@
       meaning = '';
       wordsCsv = '';
       wordRefsCsv = '';
-      groupsCsv = '';
+      groupSlugs = [];
       antonyms = [];
     } finally {
       proposing = false;
@@ -122,7 +127,7 @@
         meaning: meaning.trim(),
         words: csvToArray(wordsCsv),
         word_refs: csvToArray(wordRefsCsv),
-        groups: groupsFromCsv(groupsCsv),
+        groups: groupSlugs,
         antonyms: antonyms.map((s) => s.trim()).filter((s) => s.length > 0),
         author_confirmed: true
       });
@@ -233,8 +238,8 @@
         </label>
 
         <label class="field">
-          <span class="label">Groups (comma-separated)</span>
-          <input type="text" bind:value={groupsCsv} />
+          <span class="label">Groups</span>
+          <GroupChips bind:value={groupSlugs} suggestions={existingGroups} placeholder="Type or select a group…" />
         </label>
 
         <label class="field">
