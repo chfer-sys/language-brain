@@ -15,3 +15,7 @@ Word	Length	Pinyin	Pinyin.Input	W.million	Dominant.PoS	Dominant.PoS.Freq	All.PoS
 点	1	dian3	dian3	2100.8	N	1950.2	N/V	0.91	2100800	4.32	.	.	.	point / dot / a little
 受不了	3	shou4 bu4 liao3	shou4 bu4 liao3	320.5	V	298.2	V	0.88	32050	4.51	.	.	.	cannot bear / can't stand
 这个	2	zhe4 ge4	zhe4 ge4	15000.0	SPEC	14000.0	SPEC/PRON	0.95	15000000	5.18	.	.	.	this one
+想	1	xiang3	xiang3	2100.0	V	2000.5	V	0.95	2100000	4.32	.	.	.	to think / to want / to miss
+喜欢	2	xi3 huan1	xi3 huan1	3200.0	V	2980.2	V	0.93	3200000	4.51	.	.	.	to like / fond of
+好	1	hao3	hao3	8900.0	ADJ	8500.0	ADJ/ADV	0.96	8900000	4.95	.	.	.	good / well / -ly
+饿	1	e4	e4	450.0	ADJ	420.3	ADJ/V	0.93	450000	4.65	.	.	.	hungry

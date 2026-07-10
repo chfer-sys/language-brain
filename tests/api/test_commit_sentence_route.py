@@ -1,15 +1,14 @@
 """Tests for ``POST /api/sentences/commit`` (SPEC §6 AC3, AC4, AC5, AC9, AC12-15).
 
-Uses FastAPI's :class:`TestClient`. Each test isolates its vault under
-``tmp_path`` and monkey-patches:
-
-* ``LANGUAGE_BRAIN_VAULT`` so the route reads from a temp vault.
-* :func:`api.services.embedder.get_embedder` (imported into the route
-  module) so the embedder is a deterministic :class:`HashingEmbedder`
-  and no real model is downloaded.
+Uses the ``client`` fixture from ``conftest.py`` which:
+* Isolates the vault under ``tmp_path``
+* Patches ``settings.vault`` so the route reads from ``tmp_path``
+* Seeds the dictionary from ``segment_fixture.txt`` so
+  ``Dictionary.segment()`` resolves word units during commit
+* Forces the route to use :class:`HashingEmbedder` (no real model).
 
 The test list covers the 12 cases enumerated in the T19 brief: the
-happy path, word-unit creation, lexical edges, group members, the
+12 happy path, word-unit creation, lexical edges, group members, the
 four connector passes (lexical / opposite), FAISS index growth and
 skip-on-empty-meaning, the 422 paths, the summary shape, and
 idempotency.
@@ -22,60 +21,25 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from api.main import app
 from api.routes import commit_sentence as commit_sentence_route
-from api import config as config_module
 from api.services.embedder import HashingEmbedder
 from api.services.indexer import Index
 from api.services.unit_writer import read_unit, unit_path
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Embedder patch — autouse so every test gets a deterministic embedder
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
 def _patch_embedder(monkeypatch: pytest.MonkeyPatch) -> HashingEmbedder:
-    """Force the route to use a fresh :class:`HashingEmbedder`.
-
-    The route module does ``from api.services.embedder import
-    get_embedder``, so the symbol is bound in the route's module
-    namespace. Patching it there is sufficient — ``compute_connections``
-    also does a lazy ``from api.services.embedder import get_embedder``
-    inside the function body, but in tests we pass the embedder
-    explicitly via :func:`_get_embedder` so that path is bypassed.
-    """
+    """Force the route to use a fresh :class:`HashingEmbedder`."""
     fresh = HashingEmbedder()
     monkeypatch.setattr(
         commit_sentence_route, "get_embedder", lambda force=None: fresh
     )
     return fresh
-
-
-@pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
-    """A TestClient bound to a fresh ``LANGUAGE_BRAIN_VAULT=tmp_path``.
-
-    The route module does ``from api.config import settings``, which
-    freezes the vault path at import time. We must therefore patch
-    ``settings.vault`` directly (in addition to the env var) so the
-    route reads from this test's ``tmp_path``. We also clear the
-    ``get_settings`` lru_cache so a fresh ``Settings()`` instance is
-    built on the next access.
-
-    Clears the cache on entry AND on exit so subsequent tests don't
-    inherit this test's temp path.
-    """
-    config_module.get_settings.cache_clear()
-    monkeypatch.setenv("LANGUAGE_BRAIN_VAULT", str(tmp_path))
-    # Patch the module-level singleton too — the route imports
-    # ``settings`` directly, so the env var alone isn't enough.
-    monkeypatch.setattr(config_module.settings, "vault", str(tmp_path))
-    try:
-        yield TestClient(app)
-    finally:
-        config_module.get_settings.cache_clear()
 
 
 def _minimal_payload(**overrides: object) -> dict:
@@ -551,3 +515,118 @@ def test_commit_all_side_effects_complete_before_response(
         "the new sentence — embedder/indexer did not run."
     )
     assert len(index) == 1
+
+
+# ---------------------------------------------------------------------------
+# Dict-based commit tests (v0.5.3 Bite 3a)
+# ---------------------------------------------------------------------------
+
+
+def test_commit_uses_dict_segmentation(client: TestClient, tmp_path: Path) -> None:
+    """word_refs are dict ids (not pinyin strings); words are dict-segmented hanzi."""
+    body = _minimal_payload(
+        hanzi="我喜欢吃",
+        pinyin="wǒ xǐhuān chī",
+        english="I like to eat",
+        meaning="",
+        # body.words and body.word_refs are ignored by the dict-based route.
+        # They can be anything; the dict is authoritative.
+        words=["wrong", "wrong", "wrong"],
+        word_refs=["wrong", "wrong", "wrong"],
+    )
+    resp = client.post("/api/sentences/commit", json=body)
+    assert resp.status_code == 200, resp.text
+
+    sid = resp.json()["id"]
+    sentence = read_unit(str(tmp_path), "sentence", sid)
+
+    # words are the dict-segmented hanzi (我喜欢吃 → 我/喜欢/吃).
+    assert sentence["properties"]["words"] == ["我", "喜欢", "吃"]
+    # word_refs are dict ids (W/C prefixes), not pinyin strings.
+    word_refs = sentence["properties"]["word_refs"]
+    assert len(word_refs) == 3
+    assert all(r.startswith("W") or r.startswith("C") for r in word_refs)
+
+
+def test_commit_unknown_char_not_in_word_refs(client: TestClient, tmp_path: Path) -> None:
+    """Unknown chars appear in words[] but NOT in word_refs[]."""
+    # 僻 is not in the fixture — dict returns source=unknown for it.
+    body = _minimal_payload(
+        hanzi="我僻吃",
+        pinyin="wǒ pì chī",
+        english="I eat with a weird character",
+        meaning="",
+        words=["我", "僻", "吃"],
+        word_refs=["wǒ", "pì", "chī"],
+    )
+    resp = client.post("/api/sentences/commit", json=body)
+    assert resp.status_code == 200, resp.text
+
+    sid = resp.json()["id"]
+    sentence = read_unit(str(tmp_path), "sentence", sid)
+
+    # 僻 appears in words (unknown token), but word_refs has no entry for it.
+    assert sentence["properties"]["words"] == ["我", "僻", "吃"]
+    assert "僻" in sentence["properties"]["words"]
+    # Only 我 and 吃 have dict ids; 僻 does not.
+    word_refs = sentence["properties"]["word_refs"]
+    assert len(word_refs) == 2  # 僻 has no id, not added to word_refs
+
+
+def test_commit_dict_english_on_word_unit(client: TestClient, tmp_path: Path) -> None:
+    """Word unit gets english from dict, not from sentence english slice."""
+    body = _minimal_payload(
+        hanzi="我喜欢吃",
+        pinyin="wǒ xǐhuān chī",
+        english="I like to eat",  # sentence english
+        meaning="",
+        words=["我", "喜欢", "吃"],
+        word_refs=["wǒ", "xǐhuān", "chī"],
+    )
+    resp = client.post("/api/sentences/commit", json=body)
+    assert resp.status_code == 200, resp.text
+
+    sid = resp.json()["id"]
+    sentence = read_unit(str(tmp_path), "sentence", sid)
+    word_ids = sentence["properties"]["word_refs"]
+
+    # Look up 吃 by hanzi and verify its english is from the dict ("to eat"),
+    # not the sentence english ("I like to eat").
+    chi_unit = None
+    for wid in word_ids:
+        unit = read_unit(str(tmp_path), "word", wid)
+        if unit["properties"]["hanzi"] == "吃":
+            chi_unit = unit
+            break
+    assert chi_unit is not None
+    assert chi_unit["properties"]["english"] == "to eat"
+
+
+def test_commit_word_unit_filename_is_dict_id(client: TestClient, tmp_path: Path) -> None:
+    """Word unit file is named by dict id (W/C), not by counter id."""
+    body = _minimal_payload(
+        hanzi="我",
+        pinyin="wǒ",
+        english="I",
+        meaning="",
+        words=["我"],
+        word_refs=["wǒ"],
+    )
+    resp = client.post("/api/sentences/commit", json=body)
+    assert resp.status_code == 200, resp.text
+
+    sid = resp.json()["id"]
+    sentence = read_unit(str(tmp_path), "sentence", sid)
+    word_ids = sentence["properties"]["word_refs"]
+
+    # The word id is a dict id (starts with W or C), and the file is at
+    # units/words/{dict_id}.json.
+    assert len(word_ids) == 1
+    word_id = word_ids[0]
+    assert word_id.startswith("W") or word_id.startswith("C")
+    word_path = unit_path(str(tmp_path), "word", word_id)
+    assert word_path.is_file(), f"word unit should exist at {word_path}"
+    # Confirm it's NOT a counter id (counter ids would be W1, W2, ... in order;
+    # dict ids depend on import order but are still W/C prefixed).
+    unit = read_unit(str(tmp_path), "word", word_id)
+    assert unit["id"] == word_id

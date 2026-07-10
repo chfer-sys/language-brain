@@ -254,15 +254,24 @@ def test_ensure_word_unit_no_op_collision(tmp_path: Path) -> None:
 
 
 def test_commit_propagates_english_to_word_units(tmp_path: Path) -> None:
-    """End-to-end: committing 'I want to eat' populates word.english."""
+    """End-to-end: committing a sentence populates word.english from the dict.
+
+    Per SPEC §5.9, word english comes from the dict first. For words
+    with no dict english, backfill_word_english supplies the sentence
+    english as fallback.
+    """
     import os
 
     os.environ["LANGUAGE_BRAIN_VAULT"] = str(tmp_path)
     from api import config as config_module
+    from tests.api.conftest import _seed_dictionary
 
     config_module.get_settings.cache_clear()
     monkey = pytest.MonkeyPatch()
     monkey.setattr(config_module.settings, "vault", str(tmp_path))
+
+    # Seed the dictionary so commit uses Dictionary.segment().
+    _seed_dictionary(str(tmp_path))
 
     try:
         from fastapi.testclient import TestClient
@@ -287,19 +296,19 @@ def test_commit_propagates_english_to_word_units(tmp_path: Path) -> None:
         )
         assert resp.status_code == 200, resp.text
 
-        # Each word unit now has english from the slice.
-        # "I want to eat" has 4 English tokens against 3 words → the
-        # slice function falls back to whole-sentence english for
-        # each slot (no 1:1 mapping between English particles and
-        # Chinese tokens when the counts differ).
+        # Word units are created for all dict-known words.
         words_dir = tmp_path / "units" / "words"
         word_files = list(words_dir.glob("*.json"))
         assert len(word_files) >= 3, f"expected 3 word files, found {len(word_files)}"
-        for path in word_files:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            assert data["properties"]["english"] == "I want to eat", (
-                f"expected fallback 'I want to eat' for {data['id']}, got "
-                f"{data['properties']['english']!r}"
-            )
+
+        # Each word unit has non-empty english (dict english; backfill
+        # fills in the sentence english only when dict english is absent).
+        by_hanzi = {
+            json.loads(p.read_text(encoding="utf-8"))["properties"]["hanzi"]: json.loads(p.read_text(encoding="utf-8"))
+            for p in word_files
+        }
+        assert by_hanzi["我"]["properties"]["english"] == "I (pronoun)"
+        assert by_hanzi["想"]["properties"]["english"] == "to think / to want / to miss"
+        assert by_hanzi["吃"]["properties"]["english"] == "to eat"
     finally:
         monkey.undo()

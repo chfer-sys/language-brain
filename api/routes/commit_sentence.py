@@ -119,12 +119,12 @@ from api.services.group_helpers import ensure_groups_from_proposed
 from api.services.group_registry import add_member_to_group
 from api.services.indexer import Index
 from api.services.lexical import add_lexical_edge_to_word
-from api.services.segmenter import lcut as segmenter_lcut
+from api.services.dictionary import Dictionary
 from api.services.id_counter import next_id
 from api.services.unit_writer import read_unit, unit_path, write_unit
 from api.services.word_registry import (
     backfill_word_english,
-    ensure_word_unit,
+    ensure_word_unit_from_dict,
 )
 
 log = logging.getLogger(__name__)
@@ -182,100 +182,6 @@ def _normalize_groups_input(
     return out
 
 
-def _pair_word_refs_with_hanzi(
-    word_refs: list[str],
-    words: list[str],
-) -> list[str]:
-    """Return the hanzi to associate with each ``word_refs`` entry.
-
-    Pairing strategy
-    ----------------
-    When ``len(words) == len(word_refs)`` we zip them positionally
-    so each word unit gets the hanzi the AI's segmentation paired
-    with that tone-marked pinyin (e.g. ``"wǒ"`` paired with
-    ``"我"``). When the lengths differ (jagged output from jieba,
-    or the user hand-edited one list and not the other), we fall
-    back to empty hanzi for every entry. ``ensure_word_unit`` is
-    idempotent and creates the file either way; the missing hanzi
-    can be filled in by a later edit of the word unit. This
-    conservative fallback avoids silently mis-pairing words when
-    the two lists are out of sync.
-    """
-    if len(words) == len(word_refs):
-        return list(words)
-    return [""] * len(word_refs)
-
-
-def _resolve_segmentation(
-    hanzi: str,
-    ai_words: list[str],
-    ai_word_refs: list[str],
-) -> tuple[list[str], list[str]]:
-    """Reconcile the AI's segmentation with the user-curated segmenter.
-
-    The user-curated jieba dictionary (see ``api/services/segmenter.py``)
-    is the authority for *which tokens* make up the sentence — it's
-    deterministic, the user has curated it for compounds like 受不了 that
-    the AI might mis-segment, and re-running it on commit guarantees the
-    on-disk ``words[]`` is consistent across re-saves.
-
-    The AI's ``word_refs[]`` is the authority for *which pinyin* each
-    token maps to — the AI has contextual tone disambiguation that
-    pypinyin does not (e.g. 了 = ``liǎo`` in 了解 vs ``le`` in 吃了).
-
-    Returns the final ``(words, word_refs)`` to persist. Three cases:
-
-    1. **AI agrees with jieba.** Both lists have matching lengths. Pass
-       through unchanged.
-    2. **AI disagrees with jieba.** The AI's ``word_refs[]`` length
-       doesn't match jieba's ``words[]`` length. We trust jieba for
-       the segmentation but keep the AI's pinyin for tokens it did
-       match positionally; for the rest we fall back to deriving pinyin
-       from pypinyin.
-    3. **AI provides nothing usable.** Empty AI lists → derive both
-       from jieba + pypinyin.
-    """
-    from pypinyin import Style, lazy_pinyin
-
-    jieba_words = segmenter_lcut(hanzi)
-    jieba_pinyin = lazy_pinyin(jieba_words, style=Style.TONE)
-
-    if not ai_words or not ai_word_refs:
-        # Case 3: no AI segmentation. Derive both from scratch.
-        return jieba_words, jieba_pinyin
-
-    if len(ai_words) == len(jieba_words) == len(ai_word_refs):
-        # Case 1: perfect alignment.
-        return jieba_words, list(ai_word_refs)
-
-    # Case 2: mismatch. Try to align positionally — match each jieba
-    # word against the AI's word_refs by hanzi equality at the same
-    # position. For tokens where the AI's segmentation differs, we
-    # take the AI's pinyin only if the hanzi matches; otherwise we
-    # derive from pypinyin.
-    final_pinyin: list[str] = []
-    ai_idx = 0
-    for word in jieba_words:
-        if ai_idx < len(ai_word_refs) and ai_idx < len(ai_words):
-            ai_w = ai_words[ai_idx]
-            ai_p = ai_word_refs[ai_idx]
-            if ai_w == word and ai_p.strip():
-                # AI's segmentation matched this token. Use its pinyin.
-                final_pinyin.append(ai_p)
-                ai_idx += 1
-                continue
-        # Fallback: derive from pypinyin.
-        # Find the next unused jieba_pinyin entry (they pair 1:1).
-        if ai_idx < len(jieba_pinyin):
-            final_pinyin.append(jieba_pinyin[ai_idx])
-            ai_idx += 1
-        else:
-            # Shouldn't happen, but stay defensive.
-            final_pinyin.append(lazy_pinyin(word, style=Style.TONE)[0])
-
-    return jieba_words, final_pinyin
-
-
 # ---------------------------------------------------------------------------
 # Route
 # ---------------------------------------------------------------------------
@@ -306,30 +212,36 @@ def commit_sentence(body: CommitSentenceRequest) -> CommitSentenceResponse:
     today = _today_iso()
 
     # ------------------------------------------------------------------
-    # Step 1 — resolve segmentation + ensure word units → collect real ids
+    # Step 1 — dict segmentation + word unit materialization
     # ------------------------------------------------------------------
-    words, word_refs_pinyin = _resolve_segmentation(
-        hanzi, list(body.words), list(body.word_refs)
-    )
-    paired_hanzi = _pair_word_refs_with_hanzi(word_refs_pinyin, words)
-    word_english = _slice_sentence_english(
-        body.english, list(words), list(word_refs_pinyin)
-    )
+    with Dictionary(vault_root) as dictionary:
+        tokens = dictionary.segment(hanzi, body.pinyin)
 
+    words = [t.hanzi for t in tokens]
+    word_pinyins = [t.pinyin or "" for t in tokens]
+
+    # Materialize word units from dict tokens.
     resolved_word_refs: list[str] = []
-    for pinyin_ref, word_hanzi, word_eng in zip(word_refs_pinyin, paired_hanzi, word_english):
-        if not isinstance(pinyin_ref, str) or not pinyin_ref.strip():
+    for token in tokens:
+        if token.id is None:
+            # Unknown char — no unit, no word_ref.
             continue
-        word_unit = ensure_word_unit(
+        ensure_word_unit_from_dict(
             vault_root,
-            hanzi=word_hanzi,
-            pinyin=pinyin_ref.strip(),
-            english=word_eng,
-            meaning="",
+            word_id=token.id,
+            hanzi=token.hanzi,
+            pinyin=token.pinyin or "",
+            english=token.english or "",
         )
-        word_id = word_unit["id"]
-        resolved_word_refs.append(word_id)
-        backfill_word_english(vault_root, word_id, word_eng)
+        resolved_word_refs.append(token.id)
+
+    # Backfill english from sentence-level english for words with empty dict english.
+    word_english = _slice_sentence_english(
+        body.english, words, word_pinyins
+    )
+    for token, eng_slice in zip(tokens, word_english):
+        if token.id is not None and eng_slice:
+            backfill_word_english(vault_root, token.id, eng_slice)
 
     # ------------------------------------------------------------------
     # Step 2 — assign sentence id + write sentence unit

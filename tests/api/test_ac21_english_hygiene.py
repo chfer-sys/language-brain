@@ -120,9 +120,15 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
     module (which imports ``settings`` directly) reads from
     ``tmp_path``.
     """
+    from tests.api.conftest import _seed_dictionary
+
     config_module.get_settings.cache_clear()
     monkeypatch.setenv("LANGUAGE_BRAIN_VAULT", str(tmp_path))
     monkeypatch.setattr(config_module.settings, "vault", str(tmp_path))
+
+    # Seed the dictionary so commit uses Dictionary.segment().
+    _seed_dictionary(str(tmp_path))
+
     try:
         yield TestClient(app)
     finally:

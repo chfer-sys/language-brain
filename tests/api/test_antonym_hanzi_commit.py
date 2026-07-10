@@ -33,14 +33,15 @@ from api.main import app
 
 @pytest.fixture(autouse=True)
 def isolated_vault(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("LANGUAGE_BRAIN_VAULT", str(tmp_path))
-    # Clear the lru_cache on get_settings AND the module-level
-    # singleton (matches the pattern in test_units_route.py and
-    # test_commit_sentence_route.py).
     from api import config as config_module
+    from tests.api.conftest import _seed_dictionary
 
     config_module.get_settings.cache_clear()
+    monkeypatch.setenv("LANGUAGE_BRAIN_VAULT", str(tmp_path))
     monkeypatch.setattr(config_module.settings, "vault", str(tmp_path))
+
+    # Seed the dictionary so commit uses Dictionary.segment().
+    _seed_dictionary(str(tmp_path))
 
 
 def _seed_word(vault_root: Path, word_id: str, hanzi: str, pinyin: str) -> None:

@@ -108,6 +108,53 @@ def ensure_word_unit(
     return word_unit
 
 
+def ensure_word_unit_from_dict(
+    vault_root: str,
+    word_id: str,
+    hanzi: str,
+    pinyin: str,
+    english: str = "",
+) -> dict:
+    """Materialize a word/compound unit from a dictionary token.
+
+    The unit id comes directly from the dict (not from ``id_counter.json``).
+    This function is idempotent: if the file already exists it is NOT
+    overwritten; the existing dict is returned.
+
+    Arguments:
+        vault_root: path to the vault root.
+        word_id: dict-assigned id (e.g. ``"W4"``, ``"C12"``).
+        hanzi: the hanzi string for this token.
+        pinyin: pinyin from the dict (may be empty string).
+        english: english gloss from the dict (may be empty string).
+    """
+    path = unit_path(vault_root, "word", word_id)
+    if path.is_file():
+        return read_unit(vault_root, "word", word_id)
+
+    unit_type = "compound" if len(hanzi) >= 2 else "word"
+    today = _today_iso()
+    word_unit: dict[str, Any] = {
+        "id": word_id,
+        "type": unit_type,
+        "name": hanzi,
+        "properties": {
+            "hanzi": hanzi,
+            "pinyin": pinyin,
+            "english": english,
+            "meaning": "",
+            "groups": [],
+            "antonyms": [],
+        },
+        "connections": [],
+        "created": today,
+        "updated": today,
+        "author_confirmed": True,
+    }
+    write_unit(vault_root, word_unit)
+    return word_unit
+
+
 def backfill_word_english(
     vault_root: str,
     word_id: str,
