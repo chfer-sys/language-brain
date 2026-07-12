@@ -15,11 +15,29 @@ import os
 # environment and the AI key is never seen).
 import api.bootstrap  # noqa: F401, E402
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from api.config import configure_root_logger, settings
+
+
+class SPAStaticFiles(StaticFiles):
+    """StaticFiles subclass that falls back to index.html for SPA routing.
+
+    Any GET request that doesn't match an existing file returns index.html
+    instead of 404, so client-side routes (e.g. /add, /unit/S7) work.
+    """
+
+    async def get_response(self, path, scope):
+        try:
+            return await super().get_response(path, scope)
+        except HTTPException as ex:
+            if ex.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
+
+
 from api.routes import add_sentence as add_sentence_route
 from api.routes import commit_sentence as commit_sentence_route
 from api.routes import pinyin as pinyin_route
@@ -82,7 +100,7 @@ def healthz() -> dict[str, str]:
 # if missing (API-only mode), skip.
 _static_dir = os.environ.get("LANGUAGE_BRAIN_STATIC_DIR", "/app/static")
 if os.path.isdir(_static_dir):
-    app.mount("/", StaticFiles(directory=_static_dir, html=True), name="frontend")
+    app.mount("/", SPAStaticFiles(directory=_static_dir, html=True), name="frontend")
 
 
 def run() -> None:
