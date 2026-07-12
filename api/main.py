@@ -15,9 +15,10 @@ import os
 # environment and the AI key is never seen).
 import api.bootstrap  # noqa: F401, E402
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.config import configure_root_logger, settings
 
@@ -32,7 +33,7 @@ class SPAStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
         try:
             return await super().get_response(path, scope)
-        except HTTPException as ex:
+        except StarletteHTTPException as ex:
             if ex.status_code == 404:
                 return await super().get_response("index.html", scope)
             raise
