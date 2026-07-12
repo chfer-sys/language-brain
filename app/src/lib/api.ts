@@ -91,9 +91,10 @@ export async function getUnit(id: string): Promise<UnitDetail> {
   return res.json();
 }
 
-// Base URL — overridable in dev. Default points at the FastAPI backend.
-export const API_BASE = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE)
-  || 'http://localhost:8000';
+// Base URL — overridable via VITE_API_BASE env var.
+// Defaults to same-origin relative path (works in production when the
+// API is served from the same host as the static frontend).
+export const API_BASE = (import.meta as any).env?.VITE_API_BASE ?? '';
 
 export async function search(q: string, opts: { kinds?: ConnectionKind[]; types?: UnitType[]; signal?: AbortSignal } = {}): Promise<SearchResponse> {
   const params = new URLSearchParams({ q });

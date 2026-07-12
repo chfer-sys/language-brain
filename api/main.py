@@ -8,6 +8,8 @@ scaffolding.
 
 from __future__ import annotations
 
+import os
+
 # MUST come first: loads .env before api.config.settings is
 # constructed (otherwise the Settings lru_cache captures an empty
 # environment and the AI key is never seen).
@@ -15,6 +17,7 @@ import api.bootstrap  # noqa: F401, E402
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from api.config import configure_root_logger, settings
 from api.routes import add_sentence as add_sentence_route
@@ -72,6 +75,14 @@ def healthz() -> dict[str, str]:
         "ai_model": settings.ai_model,
         "mock_mode": "true" if settings.ai_key is None else "false",
     }
+
+
+# Serve the built SvelteKit frontend (SPA mode). Mount LAST so it doesn't
+# shadow /api/* or /healthz routes. The directory is created at build time;
+# if missing (API-only mode), skip.
+_static_dir = os.environ.get("LANGUAGE_BRAIN_STATIC_DIR", "/app/static")
+if os.path.isdir(_static_dir):
+    app.mount("/", StaticFiles(directory=_static_dir, html=True), name="frontend")
 
 
 def run() -> None:
