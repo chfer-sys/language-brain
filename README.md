@@ -77,7 +77,7 @@ ln -s ../../scripts/check_no_secrets.sh .git/hooks/pre-commit
 # Backend (pytest)
 docker run --rm --entrypoint="" \
     -v $(pwd):/work -w /work \
-    kilo-language-brain-test \
+    opencode-language-brain-test \
     pytest tests/
 
 # Frontend (vitest)
@@ -139,5 +139,5 @@ app/                          SvelteKit frontend (TypeScript + Svelte 5)
 vault/                        Units and FAISS index (JSON files on disk)
 scripts/                      reindex.py + utilities
 tests/api/                    pytest
-Dockerfile.test               kilo-language-brain-test image (Python 3.12 + all deps + torch + sentence-transformers + faiss-cpu)
+Dockerfile.test               opencode-language-brain-test image (Python 3.12 + all deps + torch + sentence-transformers + faiss-cpu)
 ```

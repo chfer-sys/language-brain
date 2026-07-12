@@ -4,10 +4,10 @@
 # run only needs to mount the source and execute pytest.
 #
 # Build:
-#     docker build -f Dockerfile.test -t kilo-language-brain-test .
+#     docker build -f Dockerfile.test -t opencode-language-brain-test .
 #
 # Run tests:
-#     docker run --rm -v $(pwd):/work -w /work kilo-language-brain-test \
+#     docker run --rm -v $(pwd):/work -w /work opencode-language-brain-test \
 #         pytest tests/ -v
 
 FROM python:3.12-slim
@@ -32,9 +32,8 @@ COPY scripts ./scripts
 # host network is occasionally slow. Retry on transient failures.
 RUN pip install --no-cache-dir --default-timeout=600 --retries 5 -e ".[dev]"
 
-# Default: run pytest. Override with `docker run ... kilo-language-brain-test bash`.
-ENTRYPOINT ["pytest"]
-CMD ["tests/", "-v"]
+# Default: run pytest. Any CMD override runs the given command directly.
+CMD ["pytest", "tests/", "-v"]
 
 # Use the HF mirror for sentence-transformers model downloads. The
 # default endpoint (huggingface.co) is slow / blocked in some
