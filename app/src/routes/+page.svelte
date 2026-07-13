@@ -75,10 +75,20 @@
     const mySeq = ++requestSeq;
     loading = true;
     error = null;
+
+    // ponytail: hard cap at 15 s; longer searches surface as an error to
+    // the user rather than hang.  The requestSeq guard (below) drops stale
+    // results, but without an AbortController the network call itself would
+    // keep running — wasting bandwidth and risking an out-of-order response
+    // to land after a newer query's result has already rendered.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+
     try {
       const resp = await search(query.trim(), {
         kinds: enabledKinds,
-        types: enabledTypes
+        types: enabledTypes,
+        signal: controller.signal
       });
       if (mySeq !== requestSeq) return;
       results = resp.results;
@@ -87,6 +97,7 @@
       error = e instanceof Error ? e.message : String(e);
       results = [];
     } finally {
+      clearTimeout(timer);
       if (mySeq === requestSeq) loading = false;
     }
   }

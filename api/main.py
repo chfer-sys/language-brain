@@ -24,19 +24,43 @@ from api.config import configure_root_logger, settings
 
 
 class SPAStaticFiles(StaticFiles):
-    """StaticFiles subclass that falls back to index.html for SPA routing.
+    """StaticFiles subclass with two responsibilities:
 
-    Any GET request that doesn't match an existing file returns index.html
-    instead of 404, so client-side routes (e.g. /add, /unit/S7) work.
+    1. Fall back to index.html for SPA routing — any GET that doesn't
+       match an existing file returns ``index.html`` instead of 404,
+       so client-side routes (e.g. ``/add``, ``/unit/S7``) work.
+
+    2. Emit ``Cache-Control: no-cache`` on every SPA bundle response so
+       browsers always re-validate the bundle with the server. The
+       upstream v0.5.x deploy pipeline used heuristic caching
+       (Last-Modified + ETag only, no Cache-Control), which let
+       browsers hold an OLD JS bundle across deploys. Symptom: a
+       fixed SPA appears still-broken to users whose browser had
+       cached the pre-fix bundle. Setting ``no-cache`` (vs.
+       ``max-age``) means the browser still caches locally but
+       always revalidates with If-None-Match, so unchanged chunks
+       get a 304 (no body), and changed chunks get the new file.
+       Cost: one extra round-trip per page-load on cache misses.
+       Benefit: stale bundles can never mask a deploy.
     """
 
     async def get_response(self, path, scope):
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as ex:
             if ex.status_code == 404:
-                return await super().get_response("index.html", scope)
-            raise
+                # SPA fallback — serve index.html for client-side routes.
+                response = await super().get_response("index.html", scope)
+            else:
+                raise
+        # Always revalidate. The heuristic-caching default let browsers
+        # hold an OLD bundle from before a deploy and miss the new code.
+        # ponytail: ceiling — fine at MVP scale; revisit if/when QPS
+        # warrants a `max-age=31536000, immutable` policy on the
+        # content-hashed chunks (immutable/[^/]+\\..+\\.js$) and
+        # `no-cache` only on index.html + version.json.
+        response.headers["cache-control"] = "no-cache"
+        return response
 
 
 from api.routes import add_sentence as add_sentence_route
