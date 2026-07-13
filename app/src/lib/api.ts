@@ -11,6 +11,7 @@ export interface SearchResult {
   snippet: string;
   kinds: ConnectionKind[];
   score: number;
+  containing_sentences?: string[];
 }
 
 export interface SearchResponse {

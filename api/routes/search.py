@@ -60,7 +60,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Path, Query
+from fastapi import APIRouter, HTTPException, Path, Query
 
 from api.config import settings
 from api.schemas import (
@@ -138,6 +138,7 @@ def _hit_to_item(hit: SearchHit, kinds: list[str]) -> SearchResultItem:
         snippet=hit.snippet,
         score=hit.score,
         kinds=sorted(kinds),
+        containing_sentences=hit.containing_sentences,
     )
 
 
@@ -289,8 +290,13 @@ def search(
     from the unit's ``properties.hanzi`` and
     ``properties.pinyin`` respectively.
     """
+    if len(q) > 200:
+        raise HTTPException(status_code=422, detail="Query too long (max 200 characters).")
+
     parsed_types = _parse_csv(types)
     parsed_kinds = _parse_csv(kinds)
+    if kinds is not None and kinds.strip() == "":
+        return SearchResponse(query=q, results=[])
 
     # Validate types against the closed set early. An unknown
     # value returns 422 rather than silently dropping the

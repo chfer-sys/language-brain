@@ -135,6 +135,10 @@ class SearchHit:
         of query tokens that appear in the slug/display-name
         haystack, plus a small prefix-match bonus, so the score
         can be up to ``1.1``.
+    containing_sentences:
+        For word-type hits, up to 3 example sentence hanzi strings
+        that contain this word (via lexical edges). None for
+        sentence/group hits.
     """
 
     unit_id: str
@@ -142,6 +146,7 @@ class SearchHit:
     name: str
     snippet: str
     score: float
+    containing_sentences: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +400,7 @@ def _tokenize_english_for_search(text: str) -> list[str]:
 def _assemble_hits(
     ranked: Iterable[tuple[str, str, float]],
     units_by_id: dict[tuple[str, str], dict[str, Any]],
+    sentences: list[dict[str, Any]] | None = None,
 ) -> list[SearchHit]:
     """Map ``(id, type, score)`` tuples to :class:`SearchHit` objects.
 
@@ -404,7 +410,19 @@ def _assemble_hits(
     empty string so a corrupt unit file can't crash the search
     response — the user will see the hit, just without a snippet,
     rather than a 500.
+
+    For word-type hits, if ``sentences`` is provided, the function
+    extracts up to 3 example sentence hanzi strings from the word's
+    lexical connections (per SPEC §2.2: word units never stand alone).
     """
+    # Build sentence lookup for containing_sentences resolution.
+    sentences_by_id: dict[str, dict[str, Any]] = {}
+    if sentences:
+        for s in sentences:
+            sid = s.get("id")
+            if isinstance(sid, str) and sid:
+                sentences_by_id[sid] = s
+
     out: list[SearchHit] = []
     for unit_id, unit_type, score in ranked:
         unit = units_by_id.get((unit_id, unit_type))
@@ -424,6 +442,28 @@ def _assemble_hits(
             raw_pinyin = properties.get("pinyin")
             if isinstance(raw_pinyin, str):
                 pinyin = raw_pinyin
+
+        # Extract containing_sentences for word units.
+        containing: list[str] | None = None
+        if unit_type == "word" and sentences_by_id:
+            containing = []
+            connections = unit.get("connections")
+            if isinstance(connections, list):
+                for conn in connections:
+                    if isinstance(conn, dict) and conn.get("kind") == "lexical":
+                        to_id = conn.get("to")
+                        if isinstance(to_id, str) and to_id in sentences_by_id:
+                            sent = sentences_by_id[to_id]
+                            sent_props = sent.get("properties")
+                            if isinstance(sent_props, dict):
+                                sh = sent_props.get("hanzi")
+                                if isinstance(sh, str) and sh:
+                                    containing.append(sh)
+                                    if len(containing) >= 3:
+                                        break
+            if not containing:
+                containing = None
+
         out.append(
             SearchHit(
                 unit_id=unit_id,
@@ -431,6 +471,7 @@ def _assemble_hits(
                 name=hanzi,
                 snippet=pinyin,
                 score=float(score),
+                containing_sentences=containing,
             )
         )
     return out
@@ -536,14 +577,19 @@ def lexical_search(
     # Step 3 — load units. list_units_by_type is sorted by id and
     # skips corrupt files, so the I/O layer mirrors the ranker's
     # determinism contract.
-    sentences = list_units_by_type(vault_root, "sentence") if include_sentences else []
+    # Always load sentences for containing_sentences resolution (word hits
+    # need to look up sentence hanzi via lexical edges even when the search
+    # is filtered to words-only). The lexical ranker only uses them when
+    # include_sentences is True.
+    sentences = list_units_by_type(vault_root, "sentence")
     words = list_units_by_type(vault_root, "word") if include_words else []
 
     # Step 4 — pure rank. Sentence + word pass uses Jaccard over
     # hanzi tokens. The group pass uses :func:`group_search`,
     # which scores over slug ids and display names. We merge them
     # here so the limit applies to the combined top-N.
-    ranked = lexical_rank(query_tokens, sentences, words, raw_query=query)
+    ranked_sentences = sentences if include_sentences else []
+    ranked = lexical_rank(query_tokens, ranked_sentences, words, raw_query=query)
     group_hits: list[SearchHit] = []
     if include_groups:
         group_hits = group_search(vault_root, query, limit=limit)
@@ -575,7 +621,7 @@ def lexical_search(
             if isinstance(uid, str) and uid:
                 units_by_id[(uid, "group")] = unit
 
-    hits = _assemble_hits(ranked, units_by_id)
+    hits = _assemble_hits(ranked, units_by_id, sentences=sentences)
 
     # If the group ranker contributed, _assemble_hits fell back to
     # empty name/snippet because groups don't carry hanzi/pinyin.

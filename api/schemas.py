@@ -140,6 +140,9 @@ class SearchResultItem(BaseModel):
       because lexical ranker is naive (it doesn't look at the
       connection graph). T22/T23 will populate it from the
       ``connections`` array on each unit.
+    * ``containing_sentences`` — for word hits, up to 3 example
+      sentence hanzi strings that contain this word (per SPEC §2.2:
+      word units never stand alone in the UI). None for sentence/group.
     """
 
     id: str
@@ -148,6 +151,7 @@ class SearchResultItem(BaseModel):
     snippet: str
     score: float
     kinds: list[str] = Field(default_factory=list)
+    containing_sentences: list[str] | None = None
 
 
 class SearchResponse(BaseModel):

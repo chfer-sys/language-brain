@@ -36,6 +36,10 @@
   <span class="score" aria-label="relevance score">{result.score.toFixed(2)}</span>
 </a>
 
+{#if result.type === 'word' && result.containing_sentences?.length}
+  <p class="word-context">e.g. {result.containing_sentences[0]}</p>
+{/if}
+
 <style>
   .row {
     display: grid;
@@ -91,5 +95,14 @@
     font-size: 13px;
     min-width: 3ch;
     text-align: right;
+  }
+
+  .word-context {
+    grid-column: 1 / -1;
+    font-size: 13px;
+    color: var(--lb-muted);
+    padding: 4px 14px 8px;
+    margin: 0;
+    border-bottom: 1px solid var(--lb-border);
   }
 </style>
