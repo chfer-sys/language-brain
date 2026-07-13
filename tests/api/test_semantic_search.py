@@ -2,8 +2,8 @@
 
 AC17 contract: ``semantic_search`` returns sentence units whose
 ``meaning`` embedding has cosine similarity to the query embedding
-strictly greater than the threshold (default 0.6). Returns empty
-list for empty query, missing index, or all-below-threshold.
+strictly greater than the threshold (default 0.3, via config). Returns
+empty list for empty query, missing index, or all-below-threshold.
 
 The hit merger test focuses on the dedup-by-(id,type), max-score,
 deterministic-sort contract that the future kinds toggle (T22)
@@ -17,12 +17,10 @@ import math
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from api.services.embedder import HashingEmbedder
 from api.services.indexer import Index
 from api.services.search import (
-    SEMANTIC_THRESHOLD,
     SearchHit,
     merge_hits,
     semantic_search,
@@ -82,11 +80,6 @@ def _seed_index(vault: Path, sentence_meanings: dict[str, str]) -> None:
 # ---------------------------------------------------------------------------
 # AC17 — semantic search returns sentence units with cosine > threshold
 # ---------------------------------------------------------------------------
-
-
-def test_semantic_threshold_default_is_0_6() -> None:
-    """AC17 specifies a default cosine threshold of 0.6."""
-    assert SEMANTIC_THRESHOLD == pytest.approx(0.6)
 
 
 def test_semantic_empty_query_returns_empty(tmp_path: Path) -> None:

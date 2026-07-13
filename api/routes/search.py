@@ -274,8 +274,8 @@ def search(
         description=(
             "Cosine-similarity cutoff for the semantic pass. "
             "Defaults to the process setting "
-            "(LANGUAGE_BRAIN_SEMANTIC_THRESHOLD env var, falling back to "
-            "the SPEC default 0.6). Lower this for vaults with thin "
+            "(LANGUAGE_BRAIN_SEMANTIC_THRESHOLD env var, default 0.3). "
+            "Lower this for vaults with thin "
             "meaning fields where English queries cluster at 0.3-0.5."
         ),
     ),

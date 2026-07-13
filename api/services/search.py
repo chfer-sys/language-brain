@@ -82,19 +82,6 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-
-#: Cosine-similarity cutoff for semantic search (SPEC §6 AC17). A
-#: FAISS hit is included only if its cosine to the query embedding
-#: is strictly greater than this value. Default 0.6 matches the
-#: SPEC's stated threshold. Tunable per call via the ``threshold``
-#: kwarg on :func:`semantic_search`.
-SEMANTIC_THRESHOLD: float = 0.6
-
-
-# ---------------------------------------------------------------------------
 # Public dataclass
 # ---------------------------------------------------------------------------
 
@@ -577,11 +564,15 @@ def lexical_search(
     # Step 3 — load units. list_units_by_type is sorted by id and
     # skips corrupt files, so the I/O layer mirrors the ranker's
     # determinism contract.
-    # Always load sentences for containing_sentences resolution (word hits
-    # need to look up sentence hanzi via lexical edges even when the search
-    # is filtered to words-only). The lexical ranker only uses them when
-    # include_sentences is True.
-    sentences = list_units_by_type(vault_root, "sentence")
+    # Sentences are loaded when the sentence pass runs (include_sentences)
+    # OR when word hits need containing_sentences resolution (include_words).
+    # A groups-only search skips the scan — those sentences would never be
+    # read. ponytail: ceiling — if a future hit type also needs sentence
+    # lookups, extend the condition.
+    if include_sentences or include_words:
+        sentences = list_units_by_type(vault_root, "sentence")
+    else:
+        sentences = []
     words = list_units_by_type(vault_root, "word") if include_words else []
 
     # Step 4 — pure rank. Sentence + word pass uses Jaccard over
@@ -996,8 +987,8 @@ def semantic_search(
     AC17 contract: returns sentence units whose ``meaning`` embedding
     has cosine similarity to the query embedding strictly greater
     than ``threshold``. Default ``threshold`` is read from the
-    process settings (``LANGUAGE_BRAIN_SEMANTIC_THRESHOLD`` env var,
-    falling back to :data:`SEMANTIC_THRESHOLD` = 0.6 per the SPEC).
+    process settings (:data:`api.config.Settings.semantic_threshold`,
+    default 0.3 — observed max cosine scores range 0.17–0.51).
 
     The function never raises on a missing index — an empty vault
     returns ``[]``. It also never raises on a missing unit file: a
@@ -1265,9 +1256,8 @@ def meanings_search(
     diagnostics are fine, but the production log stream must not
     receive user text).
 
-    ``threshold`` defaults to the process setting
-    (``LANGUAGE_BRAIN_SEMANTIC_THRESHOLD`` env var, falling back to
-    :data:`SEMANTIC_THRESHOLD` = 0.6 per the SPEC).
+    ``threshold`` is the cosine cutoff; the route layer supplies a
+    default (see :func:`api.routes.search.meanings_sentences`).
 
     Each result is a dict ``{"id": str, "hanzi": str, "pinyin": str,
     "score": float}``. The Pydantic response model
@@ -1316,8 +1306,8 @@ def meanings_search(
         Empty or whitespace-only returns ``[]``.
     threshold:
         Cosine-similarity cutoff in ``[0.0, 1.0]`` (route clamps).
-        Hits at or below this value are dropped. Default
-        :data:`SEMANTIC_THRESHOLD` (0.6).
+        Hits at or below this value are dropped. Supplied by the
+        route layer (default 0.6 at ``GET /api/meanings``).
     limit:
         Maximum number of results to return. Route clamps to
         ``[1, 100]``. Default 20.

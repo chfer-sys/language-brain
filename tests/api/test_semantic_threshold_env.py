@@ -1,9 +1,9 @@
 """Tests for v0.4.1 T1 — LANGUAGE_BRAIN_SEMANTIC_THRESHOLD env var + ?threshold= query param.
 
 The semantic search threshold is configurable per-instance via the env
-var and per-call via the route's ``?threshold=`` query param. The
-SPEC default of 0.6 must remain the baseline; this layer only adds
-override seams, not changes defaults.
+var and per-call via the route's ``?threshold=`` query param. The tuned
+default is 0.3 (observed max cosine scores range 0.17–0.51); this layer
+verifies the override seams, not the default value beyond a pin.
 """
 from __future__ import annotations
 
@@ -24,18 +24,18 @@ def isolated_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     config_module.get_settings.cache_clear()
     monkeypatch.setattr(config_module.settings, "vault", str(tmp_path))
     # Pin the env-var-driven threshold for every test so we test
-    # the seam deterministically (not the SPEC default of 0.6 which
+    # the seam deterministically (not the tuned default of 0.3 which
     # some env state on the host could override).
     yield
 
 
 def test_settings_field_exists_with_spec_default() -> None:
-    """The Settings dataclass exposes ``semantic_threshold`` with the SPEC default 0.6."""
+    """The Settings dataclass exposes ``semantic_threshold`` with the tuned default 0.3."""
     from api.config import Settings
 
     s = Settings()
     assert hasattr(s, "semantic_threshold")
-    assert s.semantic_threshold == 0.6
+    assert s.semantic_threshold == 0.3
 
 
 def test_env_var_override_is_honored(monkeypatch: pytest.MonkeyPatch) -> None:
