@@ -75,8 +75,8 @@ from typing import Any, Iterable
 
 from api.services.embedder import Embedder, get_embedder
 from api.services.indexer import Index
-from api.services.lexical import jaccard, tokenize_sentence
-from api.services.unit_writer import list_units_by_type, read_unit
+from api.services.lexical import _strip_diacritics, jaccard, tokenize_sentence
+from api.services.unit_writer import list_units_by_type
 
 log = logging.getLogger(__name__)
 
@@ -465,8 +465,9 @@ def lexical_search(
     # "i want to eat" match `emotion` (0.625 char overlap) instead
     # of the eat-related sentences.
     if isinstance(query, str):
-        char_tokens = tokenize_sentence(query)
-        word_tokens = _tokenize_english_for_search(query)
+        normalized = _strip_diacritics(query)
+        char_tokens = tokenize_sentence(normalized)
+        word_tokens = _tokenize_english_for_search(normalized)
         # De-dupe via set union, then back to a list (order
         # doesn't matter for Jaccard).
         query_tokens = list(set(char_tokens) | set(word_tokens))
@@ -656,10 +657,14 @@ def group_search(
     if not isinstance(query, str) or not query.strip():
         return []
 
+    # Strip tone diacritics before tokenizing so "wǒ xiǎng chī"
+    # produces ["wo", "xiang", "chi"] instead of partial ASCII chunks.
+    normalized = _strip_diacritics(query)
+
     # Lowercase tokens, split on any non-alphanumeric character so
     # ASCII slug queries like "basic-verbs" or "Basic Verbs" both
     # produce {basic, verbs}.
-    raw_tokens = re.findall(r"[A-Za-z0-9]+", query.lower())
+    raw_tokens = re.findall(r"[A-Za-z0-9]+", normalized.lower())
     if not raw_tokens:
         return []
 

@@ -263,8 +263,58 @@ def add_lexical_edge_to_word(
     return word_unit
 
 
+_DIACRITIC_MAP = {
+    "ā": "a",
+    "á": "a",
+    "ǎ": "a",
+    "à": "a",
+    "ē": "e",
+    "é": "e",
+    "ě": "e",
+    "è": "e",
+    "ī": "i",
+    "í": "i",
+    "ǐ": "i",
+    "ì": "i",
+    "ō": "o",
+    "ó": "o",
+    "ǒ": "o",
+    "ò": "o",
+    "ū": "u",
+    "ú": "u",
+    "ǔ": "u",
+    "ù": "u",
+    "ǖ": "ü",
+    "ǘ": "ü",
+    "ǚ": "ü",
+    "ǜ": "ü",
+    "ń": "n",
+    "ň": "n",
+}
+
+
+def _strip_diacritics(text: str) -> str:
+    """Strip tone diacritics from a pinyin string.
+
+    Converts tone-marked vowels (ǎ, ǒ, ī, etc.) to their base ASCII
+    equivalents so a user query like "wǒ xiǎng chī" normalizes to
+    "wo xiang chi" for matching against the ASCII pinyin stored in
+    unit properties.
+
+    ponytail: O(n) scan, single pass, no allocations beyond the output
+    string. Upgrading to ``str.translate`` with a pre-built table is
+    possible but not worth the code size for the ~33 k-entry vault we
+    handle today.
+    """
+    out = []
+    for ch in text:
+        out.append(_DIACRITIC_MAP.get(ch, ch))
+    return "".join(out)
+
+
 __all__ = [
     "tokenize_sentence",
     "jaccard",
     "add_lexical_edge_to_word",
+    "_strip_diacritics",
 ]
