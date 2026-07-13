@@ -32,3 +32,4 @@ vault/units/**/*.json
 # are the canonical design-review artifacts; PNGs are local-only).
 .playwright-mcp/
 .specs/screenshots/
+.osgrep

@@ -291,7 +291,12 @@ def search(
     ``properties.pinyin`` respectively.
     """
     if len(q) > 200:
-        raise HTTPException(status_code=422, detail="Query too long (max 200 characters).")
+        from fastapi import HTTPException, status
+
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Query too long (max 200 characters).",
+        )
 
     parsed_types = _parse_csv(types)
     parsed_kinds = _parse_csv(kinds)

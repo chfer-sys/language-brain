@@ -22,8 +22,12 @@ COPY pyproject.toml ./
 COPY api ./api
 COPY scripts ./scripts
 
-# Install runtime deps only (not dev deps).
-RUN pip install --no-cache-dir -e .
+# Install CPU-only torch first (avoids ~5GB of nvidia/CUDA packages
+# that a CPU-only server doesn't need), then the rest of the deps.
+# ponytail: ceiling — if we ever run on a GPU host, drop the --index-url
+# and let pip pull the default CUDA-enabled torch.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -e .
 
 # HF mirror for sentence-transformers model downloads.
 ENV HF_ENDPOINT=https://hf-mirror.com
