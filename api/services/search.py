@@ -167,6 +167,7 @@ def lexical_rank(
     query_tokens: list[str],
     sentences: list[dict[str, Any]],
     words: list[dict[str, Any]],
+    raw_query: str | None = None,
 ) -> list[tuple[str, str, float]]:
     """Compute lexical Jaccard hits against a sentence + word list.
 
@@ -214,6 +215,10 @@ def lexical_rank(
         one are skipped silently.
     words:
         Word unit dicts. Same contract as ``sentences``.
+    raw_query:
+        The original query string before tokenization. Used for
+        pinyin syllable-level scoring when the query is a multi-syllable
+        ASCII pinyin string (e.g. "wo xiang chi").
 
     Returns
     -------
@@ -228,12 +233,12 @@ def lexical_rank(
     raw: list[tuple[str, str, float]] = []
 
     for unit in sentences:
-        hit = _score_unit(unit, "sentence", query_tokens)
+        hit = _score_unit(unit, "sentence", query_tokens, raw_query)
         if hit is not None:
             raw.append(hit)
 
     for unit in words:
-        hit = _score_unit(unit, "word", query_tokens)
+        hit = _score_unit(unit, "word", query_tokens, raw_query)
         if hit is not None:
             raw.append(hit)
 
@@ -257,10 +262,31 @@ def lexical_rank(
     return deduped
 
 
+def _is_pinyin_query(query: str) -> bool:
+    """Return True if ``query`` looks like a pinyin query (ASCII letters + spaces only).
+
+    A pinyin query contains only ASCII letters a-z (after stripping diacritics)
+    and spaces, with at least one space to indicate multi-syllable input.
+    This distinguishes pinyin from:
+      - CJK hanzi queries (e.g. "吃")
+      - English word queries (e.g. "eat" — no spaces, but also no CJK)
+    """
+    if not isinstance(query, str):
+        return False
+    stripped = _strip_diacritics(query)
+    # Must contain at least one space (multi-syllable) to be treated as pinyin.
+    # Single-word ASCII like "eat" is treated as English, not pinyin.
+    if " " not in stripped:
+        return False
+    # Every character must be ASCII letter or space.
+    return all(c.isascii() and (c.isalpha() or c.isspace()) for c in stripped)
+
+
 def _score_unit(
     unit: dict[str, Any],
     unit_type: str,
     query_tokens: list[str],
+    raw_query: str | None = None,
 ) -> tuple[str, str, float] | None:
     """Return ``(id, unit_type, score)`` for one unit or ``None`` to skip.
 
@@ -269,26 +295,23 @@ def _score_unit(
     * the unit is not a dict;
     * the unit's ``id`` is missing or not a non-empty string;
     * the unit has no tokenizable text in any of its scored fields
-      (hanzi + english + meaning).
+      (hanzi + english + meaning + pinyin).
 
     Scoring
     -------
-    Three fields are scored against ``query_tokens``:
+    Four fields are scored against ``query_tokens``:
 
     1. ``properties.hanzi`` — char-level tokens (CJK-aware via
        :func:`api.services.lexical.tokenize_sentence`).
     2. ``properties.english`` — lowercased whole-word tokens (via
        :func:`_tokenize_english_for_search`).
     3. ``properties.meaning`` — same whole-word tokenizer.
+    4. ``properties.pinyin`` — syllable-level Jaccard for pinyin queries
+       (bonus: 1.5× multiplier rewards multi-syllable matches).
 
-    The final score is the **max** of the three Jaccard values. This
-    means a hanzi query naturally scores against hanzi tokens, an
-    English query naturally scores against english/meaning tokens,
-    and a mixed query takes the best match across all three. The
-    char-level Jaccard over ASCII was the source of the v0.4.1
-    regression (typing "i want to eat" matched `emotion` because
-    of character overlap); with this change English queries land
-    on english/meaning tokens instead.
+    The final score is the **max** of the Jaccard values across all fields.
+    For pinyin queries, syllable-level Jaccard is computed against the stored
+    pinyin syllables, then boosted by 1.5× before taking the max.
 
     Empty fields are silently skipped (no penalty). A unit with
     no tokenizable text returns ``None``.
@@ -317,6 +340,21 @@ def _score_unit(
         text_tokens = _tokenize_english_for_search(text)
         if text_tokens:
             best_score = max(best_score, jaccard(query_tokens, text_tokens))
+
+    # Pinyin-aware scoring: syllable-level Jaccard for pinyin queries.
+    # ponytail: _is_pinyin_query is O(n) on query string length (n ≤ ~50 for pinyin),
+    # called once per unit. For large vaults consider caching, but n is small.
+    if raw_query is not None and _is_pinyin_query(raw_query):
+        stored_pinyin = properties.get("pinyin")
+        if isinstance(stored_pinyin, str) and stored_pinyin:
+            # Split stored pinyin into syllables (whitespace-separated).
+            stored_syllables = _strip_diacritics(stored_pinyin).split()
+            if stored_syllables:
+                # Split the raw query into syllables too.
+                query_syllables = _strip_diacritics(raw_query).split()
+                if query_syllables:
+                    syllable_jacc = jaccard(query_syllables, stored_syllables)
+                    best_score = max(best_score, syllable_jacc * 1.5)
 
     if best_score <= 0.0:
         return None
@@ -505,7 +543,7 @@ def lexical_search(
     # hanzi tokens. The group pass uses :func:`group_search`,
     # which scores over slug ids and display names. We merge them
     # here so the limit applies to the combined top-N.
-    ranked = lexical_rank(query_tokens, sentences, words)
+    ranked = lexical_rank(query_tokens, sentences, words, raw_query=query)
     group_hits: list[SearchHit] = []
     if include_groups:
         group_hits = group_search(vault_root, query, limit=limit)
