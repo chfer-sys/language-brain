@@ -78,7 +78,10 @@
   {#if loading}
     <span class="hanzi-loading" aria-busy="true">{text}</span>
   {:else}
-    {#each entries as entry (entry.char)}
+    <!-- ponytail: index-based key is fine here because entries are recomputed
+         wholesale on every `text` change; if we ever need to swap individual
+         entries in/out, switch to a synthetic key like `${i}-${entry.char}`. -->
+    {#each entries as entry, i (i)}
       {#if entry.pinyin}
         <span
           class="hanzi-char"
