@@ -62,16 +62,16 @@ class Settings(BaseSettings):
     )
 
     semantic_threshold: float = Field(
-        default=0.6,
+        default=0.3,  # was 0.6; observed max semantic scores range 0.17–0.51
         ge=0.0,
         le=1.0,
         description=(
             "Cosine-similarity cutoff for semantic search (SPEC §6 AC17). "
             "Tunable per instance via the LANGUAGE_BRAIN_SEMANTIC_THRESHOLD "
-            "env var. The default 0.6 matches the SPEC; lower it (e.g. 0.4) "
-            "for vaults with thin meaning fields where English queries "
-            "cluster around 0.3–0.5 similarity. The route also accepts a "
-            "?threshold= query param for one-off overrides."
+            "env var. Observed max semantic scores range 0.17–0.51, so a "
+            "threshold of 0.3 allows meaningful results through while "
+            "filtering noise. The route also accepts a ?threshold= query "
+            "param for one-off overrides."
         ),
     )
 
