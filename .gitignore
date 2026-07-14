@@ -1,5 +1,12 @@
+# .env files: ignore them all by default. The backend .env carries
+# secrets (LANGUAGE_BRAIN_AI_KEY, etc.) and must NEVER be committed.
+# The frontend app/.env is the explicit exception: it carries only
+# VITE_API_BASE (a public LAN URL) and is tracked so every dev machine
+# builds against the same 24/7 server. As of 2026-07-13, a follow-up
+# safety check confirmed this file contains no secrets.
 .env
 .env.*
+!app/.env
 __pycache__/
 *.pyc
 node_modules/
