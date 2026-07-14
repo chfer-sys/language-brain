@@ -29,7 +29,6 @@ from api.config import settings
 from api.services.unit_writer import (
     VALID_UNIT_TYPES,
     read_unit,
-    unit_path,
 )
 
 log = logging.getLogger(__name__)
@@ -66,6 +65,29 @@ def _sentence_ids_containing_word(vault_root: str, word_id: str, word_hanzi: str
     return hits
 
 
+def _connection_name(vault_root: str, target_id: str, name_cache: dict[str, str]) -> str:
+    """Return the display name for a connection target id, using name_cache
+    to avoid reading the same target unit multiple times.
+
+    Tries each unit type in order; returns the id as-is if not found.
+    """
+    if target_id in name_cache:
+        return name_cache[target_id]
+    for unit_type in VALID_UNIT_TYPES:
+        try:
+            unit = read_unit(vault_root, unit_type, target_id)
+        except FileNotFoundError:
+            continue
+        props = unit.get("properties", {})
+        # sentence/word/compound: hanzi; group: display_name
+        name = props.get("hanzi") or props.get("display_name") or target_id
+        name_cache[target_id] = name
+        return name
+    # Target unit not found in any type — fall back to the bare id.
+    name_cache[target_id] = target_id
+    return target_id
+
+
 @router.get("/{unit_id}")
 def get_unit(unit_id: str) -> dict:
     """Return a single unit (sentence, word, or group) by id.
@@ -89,6 +111,9 @@ def get_unit(unit_id: str) -> dict:
             detail="unit_id must be a non-empty string",
         )
 
+    # Shared name cache: avoids re-reading the same target unit for each
+    # connection.  Persists for the lifetime of this single request.
+    _name_cache: dict[str, str] = {}
     last_error: Exception | None = None
     for unit_type in VALID_UNIT_TYPES:
         try:
@@ -113,9 +138,37 @@ def get_unit(unit_id: str) -> dict:
         if data.get("type") == "word":
             props = data.get("properties", {})
             word_hanzi = props.get("hanzi", "") or ""
-            data["containing_sentences"] = _sentence_ids_containing_word(
+            sentence_ids = _sentence_ids_containing_word(
                 settings.vault, unit_id, word_hanzi
             )
+            # ponytail: name_cache shared with connection enrichment below;
+            # each sentence is looked up once even if referenced by multiple paths.
+            data["containing_sentences"] = [
+                {"id": sid, "name": _connection_name(settings.vault, sid, _name_cache)}
+                for sid in sentence_ids
+            ]
+
+        # Enrich every connection with its target's display name (hanzi or
+        # display_name).  Missing targets fall back to the bare id — we never
+        # raise here so a corrupt vault can't break the API for valid units.
+        for conn in data.get("connections", []):
+            conn["name"] = _connection_name(settings.vault, conn["to"], _name_cache)
+
+        # Resolve word-unit antonym IDs → display names (hanzi).  Sentences
+        # store hanzi strings directly so resolution is a no-op for them.
+        # ponytail: this is O(k) lookups where k = len(antonyms).  The
+        # _connection_name helper uses _name_cache so repeat calls for the
+        # same id are free.  Accepted ceiling: very large antonym lists
+        # (>1000) would do O(1000) disk reads; upgrade path is to batch-load
+        # all word units once per request (v0.5.5 SQLite word table).
+        if data.get("type") == "word":
+            resolved_antonyms: list[str] = []
+            for a in data.get("properties", {}).get("antonyms", []):
+                if isinstance(a, str) and a:
+                    resolved_antonyms.append(_connection_name(settings.vault, a, _name_cache))
+                else:
+                    resolved_antonyms.append(a)
+            data["properties"]["antonyms"] = resolved_antonyms
 
         return data
 

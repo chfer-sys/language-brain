@@ -141,8 +141,10 @@ test('Note 1 — English field pre-filled from typed hint (authoritative)', asyn
   await page.locator('input[type="text"]').first().fill('drooling over food');
   await page.locator('[data-testid="propose-btn"]').click();
   await expect(page.locator('[data-testid="english-input"]')).toHaveValue('drooling over food', { timeout: 3000 });
-  await expect(page.locator('[data-testid="proposed-form"]')).toContainText('AI suggested');
-  await expect(page.locator('[data-testid="proposed-form"]')).toContainText(FAKE_LABELS.english);
+  await expect(page.locator('[data-testid="use-suggestion-btn"]')).toBeVisible();
+  // Clicking the button populates the input with the AI draft (user can still edit it)
+  await page.locator('[data-testid="use-suggestion-btn"]').click();
+  await expect(page.locator('[data-testid="english-input"]')).toHaveValue(FAKE_LABELS.english);
 });
 
 test('Note 1 — sends user-edited English to commitSentence (not AI draft)', async ({ page }) => {
@@ -165,7 +167,44 @@ test('Note 1 — hides AI suggestion when user matches AI draft', async ({ page 
   await page.locator('input[type="text"]').first().fill(FAKE_LABELS.english);
   await page.locator('[data-testid="propose-btn"]').click();
   await expect(page.locator('[data-testid="proposed-form"]')).toBeVisible({ timeout: 3000 });
-  await expect(page.locator('[data-testid="proposed-form"]')).not.toContainText('AI suggested');
+  await expect(page.locator('[data-testid="use-suggestion-btn"]')).not.toBeVisible();
+});
+
+test('Note 1 — click suggestion button populates English input when no hint given', async ({ page }) => {
+  setupApiMocks(page);
+  await page.goto('/add');
+  await page.locator('[data-testid="hanzi-input"]').fill('我流口水了');
+  // No English hint typed
+  await page.locator('[data-testid="propose-btn"]').click();
+  await expect(page.locator('[data-testid="proposed-form"]')).toBeVisible({ timeout: 3000 });
+  // English input is empty (no hint was given)
+  await expect(page.locator('[data-testid="english-input"]')).toHaveValue('');
+  // Suggestion button is visible with the AI draft text
+  await expect(page.locator('[data-testid="use-suggestion-btn"]')).toBeVisible();
+  await expect(page.locator('[data-testid="use-suggestion-btn"]')).toContainText(FAKE_LABELS.english);
+  // Clicking the button populates the English input
+  await page.locator('[data-testid="use-suggestion-btn"]').click();
+  await expect(page.locator('[data-testid="english-input"]')).toHaveValue(FAKE_LABELS.english);
+  // Suggestion is still visible (user can revert by typing over)
+  await expect(page.locator('[data-testid="use-suggestion-btn"]')).toBeVisible();
+});
+
+test('Note 1 — use-suggestion button reappears after user edits English to differ from proposed', async ({ page }) => {
+  setupApiMocks(page);
+  await page.goto('/add');
+  await page.locator('[data-testid="hanzi-input"]').fill('我流口水了');
+  // No English hint typed
+  await page.locator('[data-testid="propose-btn"]').click();
+  await expect(page.locator('[data-testid="proposed-form"]')).toBeVisible({ timeout: 3000 });
+  // Clicking the button populates the English input with the AI draft
+  await page.locator('[data-testid="use-suggestion-btn"]').click();
+  await expect(page.locator('[data-testid="english-input"]')).toHaveValue(FAKE_LABELS.english);
+  // Suggestion button is still visible (user can still revert)
+  await expect(page.locator('[data-testid="use-suggestion-btn"]')).toBeVisible();
+  // User edits the English field to a different value
+  await page.locator('[data-testid="english-input"]').fill('user typed their own english');
+  // Button reappears because english !== proposed.english
+  await expect(page.locator('[data-testid="use-suggestion-btn"]')).toBeVisible();
 });
 
 // ─── T2 / Note 3: Antonym chip editor ────────────────────────────────────────

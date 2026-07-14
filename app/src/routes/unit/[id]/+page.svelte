@@ -157,7 +157,7 @@
               <ul>
                 {#each connectionsByKind[kind] as c (c.to)}
                   <li>
-                    <a href="/unit/{encodeURIComponent(c.to)}">{c.to}</a>
+                    <a href="/unit/{encodeURIComponent(c.to)}">{c.name ?? c.to}</a>
                     <span class="score">{c.score.toFixed(2)}</span>
                   </li>
                 {/each}
@@ -175,9 +175,11 @@
           <p class="empty" data-testid="no-containing">This word is not yet referenced by any saved sentence.</p>
         {:else}
           <ul>
-            {#each unit.containing_sentences as sentenceId (sentenceId)}
+            {#each unit.containing_sentences as sentence (sentence.id)}
               <li>
-                <a href="/unit/{encodeURIComponent(sentenceId)}">{sentenceId}</a>
+                <a href="/unit/{encodeURIComponent(sentence.id)}">
+                  {typeof sentence === 'string' ? sentence : sentence.name}
+                </a>
               </li>
             {/each}
           </ul>
