@@ -218,7 +218,18 @@
           <span class="label">English (your hint — the canonical gloss)</span>
           <input type="text" bind:value={english} data-testid="english-input" />
           {#if proposed?.english && proposed.english !== english}
-            <span class="sub-hint">AI suggested: <code>{proposed.english}</code></span>
+            <span class="sub-hint">
+              <button
+                type="button"
+                class="ai-suggestion-btn"
+                aria-label="Use suggestion: {proposed.english}"
+                data-testid="use-suggestion-btn"
+                on:click={() => {
+                  english = proposed.english;
+                  document.querySelector<HTMLInputElement>('[data-testid="english-input"]')?.focus();
+                }}
+              >Use suggestion: {proposed.english}</button>
+            </span>
           {/if}
         </label>
 
@@ -308,6 +319,23 @@
 
   .sub-hint code {
     font-size: 12px;
+  }
+
+  /* ponytail: minimal styling — no new design system, just link-like affordance */
+  .ai-suggestion-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--lb-accent, #5c6bc0);
+    font-size: 12px;
+    cursor: pointer;
+    text-decoration: underline;
+    font-family: inherit;
+  }
+
+  .ai-suggestion-btn:focus-visible {
+    outline: 2px solid var(--lb-accent, #5c6bc0);
+    border-radius: 2px;
   }
 
   .form,
