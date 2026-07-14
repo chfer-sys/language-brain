@@ -155,6 +155,22 @@ def get_unit(unit_id: str) -> dict:
         for conn in data.get("connections", []):
             conn["name"] = _connection_name(settings.vault, conn["to"], _name_cache)
 
+        # Resolve word-unit antonym IDs → display names (hanzi).  Sentences
+        # store hanzi strings directly so resolution is a no-op for them.
+        # ponytail: this is O(k) lookups where k = len(antonyms).  The
+        # _connection_name helper uses _name_cache so repeat calls for the
+        # same id are free.  Accepted ceiling: very large antonym lists
+        # (>1000) would do O(1000) disk reads; upgrade path is to batch-load
+        # all word units once per request (v0.5.5 SQLite word table).
+        if data.get("type") == "word":
+            resolved_antonyms: list[str] = []
+            for a in data.get("properties", {}).get("antonyms", []):
+                if isinstance(a, str) and a:
+                    resolved_antonyms.append(_connection_name(settings.vault, a, _name_cache))
+                else:
+                    resolved_antonyms.append(a)
+            data["properties"]["antonyms"] = resolved_antonyms
+
         return data
 
     raise HTTPException(
