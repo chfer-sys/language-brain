@@ -76,11 +76,11 @@ export interface UnitDetail {
   type: UnitType;
   name: string;
   properties: Record<string, unknown>;
-  connections: { to: string; kind: ConnectionKind; score: number }[];
+  connections: { to: string; kind: ConnectionKind; score: number; name?: string }[];
   created: string;
   updated: string;
   author_confirmed: boolean;
-  containing_sentences?: string[];
+  containing_sentences?: { id: string; name: string }[];
 }
 
 export async function getUnit(id: string): Promise<UnitDetail> {
