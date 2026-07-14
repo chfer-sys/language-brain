@@ -155,8 +155,10 @@ def test_word_unit_includes_containing_sentences(client_with_vault):
     assert resp.status_code == 200
     body = resp.json()
     assert body["type"] == "word"
-    # s-1 references chī in word_refs.
-    assert "s-1" in body["containing_sentences"]
+    # s-1 references chī in word_refs; each entry is now {id, name}.
+    assert len(body["containing_sentences"]) == 1
+    assert body["containing_sentences"][0]["id"] == "s-1"
+    assert body["containing_sentences"][0]["name"] == "我喜欢吃"
 
 
 def test_word_unit_containing_sentences_empty_when_no_match(client_with_vault):
@@ -200,3 +202,94 @@ def test_sentence_unit_does_not_carry_containing_sentences(client_with_vault):
     resp = client.get("/api/units/food")
     body = resp.json()
     assert "containing_sentences" not in body
+
+
+def test_get_unit_includes_connection_names(client_with_vault):
+    """Each connection entry carries a 'name' field with the target's hanzi
+    (for word/sentence) or display_name (for group)."""
+    client, vault = client_with_vault
+    # Write a sentence with explicit connections to the seeded word and group.
+    write_unit(
+        vault,
+        {
+            "id": "test-s",
+            "type": "sentence",
+            "name": "测试句",
+            "properties": {
+                "hanzi": "测试句",
+                "pinyin": "cèsì jù",
+                "english": "test sentence",
+                "meaning": "",
+                "words": [],
+                "word_refs": [],
+                "groups": [],
+                "antonyms": [],
+            },
+            "connections": [
+                {"to": "chī", "kind": "lexical", "score": 0.9},
+                {"to": "food", "kind": "group", "score": 0.5},
+            ],
+            "created": "2026-07-01",
+            "updated": "2026-07-01",
+            "author_confirmed": True,
+        },
+    )
+    # Seed the word and group units that connections point to.
+    _seed_three_units(vault)
+    resp = client.get("/api/units/test-s")
+    assert resp.status_code == 200
+    body = resp.json()
+    conn_by_to = {c["to"]: c for c in body["connections"]}
+    # lexical to chī → name should be the word's hanzi
+    assert conn_by_to["chī"]["name"] == "吃"
+    # group to food → name should be the group's display_name
+    assert conn_by_to["food"]["name"] == "Food"
+
+
+def test_get_unit_connection_name_falls_back_to_id_for_missing_target(client_with_vault):
+    """If a connection target does not exist, 'name' falls back to the bare id
+    rather than raising an error."""
+    client, vault = client_with_vault
+    # Write a sentence whose connections point to a non-existent word.
+    write_unit(
+        vault,
+        {
+            "id": "orphan",
+            "type": "sentence",
+            "name": "orphan",
+            "properties": {
+                "hanzi": "虚拟句",
+                "pinyin": "xūnǐ jù",
+                "english": "orphan sentence",
+                "meaning": "",
+                "words": [],
+                "word_refs": [],
+                "groups": [],
+                "antonyms": [],
+            },
+            "connections": [{"to": "nonexistent-word", "kind": "lexical", "score": 0.5}],
+            "created": "2026-07-01",
+            "updated": "2026-07-01",
+            "author_confirmed": True,
+        },
+    )
+    resp = client.get("/api/units/orphan")
+    assert resp.status_code == 200
+    conn = resp.json()["connections"][0]
+    assert conn["to"] == "nonexistent-word"
+    assert conn["name"] == "nonexistent-word"  # falls back to bare id
+
+
+def test_get_unit_includes_containing_sentence_names(client_with_vault):
+    """Word response carries containing_sentences as {id, name} objects so the
+    frontend can render sentence hanzi directly."""
+    client, vault = client_with_vault
+    _seed_three_units(vault)
+    resp = client.get("/api/units/chī")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["type"] == "word"
+    sentences = body["containing_sentences"]
+    assert len(sentences) == 1
+    assert sentences[0]["id"] == "s-1"
+    assert sentences[0]["name"] == "我喜欢吃"
