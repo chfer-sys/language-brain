@@ -29,7 +29,6 @@ from api.config import settings
 from api.services.unit_writer import (
     VALID_UNIT_TYPES,
     read_unit,
-    unit_path,
 )
 
 log = logging.getLogger(__name__)
