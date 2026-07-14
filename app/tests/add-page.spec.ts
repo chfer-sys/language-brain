@@ -189,6 +189,24 @@ test('Note 1 — click suggestion button populates English input when no hint gi
   await expect(page.locator('[data-testid="use-suggestion-btn"]')).toBeVisible();
 });
 
+test('Note 1 — use-suggestion button reappears after user edits English to differ from proposed', async ({ page }) => {
+  setupApiMocks(page);
+  await page.goto('/add');
+  await page.locator('[data-testid="hanzi-input"]').fill('我流口水了');
+  // No English hint typed
+  await page.locator('[data-testid="propose-btn"]').click();
+  await expect(page.locator('[data-testid="proposed-form"]')).toBeVisible({ timeout: 3000 });
+  // Clicking the button populates the English input with the AI draft
+  await page.locator('[data-testid="use-suggestion-btn"]').click();
+  await expect(page.locator('[data-testid="english-input"]')).toHaveValue(FAKE_LABELS.english);
+  // Suggestion button is still visible (user can still revert)
+  await expect(page.locator('[data-testid="use-suggestion-btn"]')).toBeVisible();
+  // User edits the English field to a different value
+  await page.locator('[data-testid="english-input"]').fill('user typed their own english');
+  // Button reappears because english !== proposed.english
+  await expect(page.locator('[data-testid="use-suggestion-btn"]')).toBeVisible();
+});
+
 // ─── T2 / Note 3: Antonym chip editor ────────────────────────────────────────
 
 test('T2 — antonyms field renders as a chip editor (not CSV input)', async ({ page }) => {
