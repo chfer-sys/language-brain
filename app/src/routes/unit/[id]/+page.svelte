@@ -64,7 +64,7 @@
         { key: 'english' },
         { key: 'meaning' },
         { key: 'words', renderAs: 'csv' },
-        { key: 'word_refs', renderAs: 'csv' },
+        { key: 'word_refs', renderAs: 'chips' },
         { key: 'groups', renderAs: 'chips' },
         // Antonyms are bare hanzi characters per Note 3 / T2; render
         // them as chips for visual scanability.
@@ -135,7 +135,11 @@
             {#if renderAs === 'chips' && Array.isArray(value)}
               <span class="chips-readonly">
                 {#each value as chip (chip)}
-                  <span class="chip-readonly" data-testid="prop-{key}-chip-{chip}">{chip}</span>
+                  {#if key === 'word_refs'}
+                    <a href="/unit/{encodeURIComponent(chip)}" class="chip chip-link" data-testid="prop-{key}-chip-{chip}">{chip}</a>
+                  {:else}
+                    <span class="chip chip-readonly" data-testid="prop-{key}-chip-{chip}">{chip}</span>
+                  {/if}
                 {/each}
               </span>
             {:else}
@@ -298,6 +302,25 @@
     border-radius: 999px;
     font-size: 13px;
     color: #1e3a8a;
+  }
+
+  .chip-link {
+    display: inline-block;
+    padding: 2px 8px;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 999px;
+    font-size: 13px;
+    color: #1e3a8a;
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .chip-link:hover,
+  .chip-link:focus-visible {
+    background: #dbeafe;
+    border-color: #93c5fd;
+    text-decoration: underline;
   }
 
   .connections ul {
