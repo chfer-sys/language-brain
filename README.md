@@ -93,6 +93,7 @@ The current state: **438 pytest + 28 vitest, 0 failing**.
 | `/` | Default page — search box above the fold (AC22). Results, kind-toggles, and type-filters render below the fold as you type. |
 | `/add` | Add-sentence page — hanzi + optional English hint, "Propose labels" calls the AI, all 7 fields editable, "Save" commits to the vault. |
 | `/unit/{id}` | Unit detail page — name, type, properties, connections grouped by kind. Word pages also list sentences containing the word (the word never renders alone). |
+| `/vault` | Browse vault page — list units by type (Word \| Compound \| Sentence) with sort and auto-pagination above 50. |
 
 ## API surface
 
@@ -105,6 +106,7 @@ The current state: **438 pytest + 28 vitest, 0 failing**.
 | `GET` | `/api/meanings/{text}/sentences` | Given an English meaning, return sentence units whose `meaning` embedding has cosine > threshold (default 0.6). Only `id`, `hanzi`, `pinyin`, `score`. |
 | `GET` | `/api/units/{id}` | Author view of a single unit (sentence / word / group). Includes `english`/`meaning`. Word responses additionally carry `containing_sentences`. |
 | `POST` | `/api/reindex` | Full rebuild of `vault/index/`. |
+| `GET` | `/api/vault/list?type=&limit=&offset=&sort=` | Browse vault — returns `id`, `name`, `snippet` only (no `english`/`meaning`). Pagination above 50. |
 
 The SvelteKit dev server (`localhost:5173`) and FastAPI (`localhost:8000`)
 are cross-origin in dev, so the API runs a small `CORSMiddleware`
