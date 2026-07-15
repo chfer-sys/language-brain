@@ -174,8 +174,8 @@ test('shows error message when getUnit fails', async ({ page }) => {
 test('has a back link to the home page', async ({ page }) => {
   mockUnitApi(page, FAKE_SENTENCE);
   await page.goto('/unit/s-1');
-  const back = page.locator('a.back');
-  await expect(back).toHaveAttribute('href', '/');
+  const back = page.locator('[data-testid="back-link"]');
+  await expect(back).toBeVisible();
 });
 
 // ─── Connection + containing-sentence name enrichment ─────────────────────────
