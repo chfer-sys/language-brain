@@ -68,6 +68,7 @@ from api.routes import commit_sentence as commit_sentence_route
 from api.routes import pinyin as pinyin_route
 from api.routes import search as search_route
 from api.routes import units as units_route
+from api.routes import vault as vault_route
 
 configure_root_logger()
 
@@ -107,6 +108,7 @@ app.include_router(commit_sentence_route.router)
 app.include_router(search_route.router)
 app.include_router(units_route.router)
 app.include_router(pinyin_route.router)
+app.include_router(vault_route.router)
 
 
 @app.get("/healthz")
