@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { page } from '$app/stores';
   import { vaultList, type VaultBrowseType, type VaultSortKey } from '$lib/api';
 
   const LIMIT = 50;
@@ -34,18 +37,6 @@
     }
   }
 
-  async function selectTab(type: VaultBrowseType) {
-    activeType = type;
-    offset = 0;
-    await load();
-  }
-
-  async function changeSort(newSort: VaultSortKey) {
-    sort = newSort;
-    offset = 0;
-    await load();
-  }
-
   async function prev() {
     offset = Math.max(0, offset - LIMIT);
     await load();
@@ -59,9 +50,38 @@
   $: hasPrev = offset > 0;
   $: hasNext = offset + LIMIT < total;
 
-  // Initial load.
-  load();
-</script>
+  // ponytail: SvelteKit requires onMount to read $page at init time (universal
+  // stores are not guaranteed synchronous on the first render).  Read ?type and
+  // ?sort from the URL before calling load() so the correct tab is active.
+  onMount(() => {
+    const typeParam = $page.url.searchParams.get('type');
+    const sortParam = $page.url.searchParams.get('sort');
+    if (typeParam === 'word' || typeParam === 'compound' || typeParam === 'sentence') {
+      activeType = typeParam;
+    }
+    if (sortParam === 'id' || sortParam === 'pinyin') {
+      sort = sortParam;
+    }
+    load();
+  });
+
+  async function selectTab(type: VaultBrowseType) {
+    activeType = type;
+    offset = 0;
+    const url = new URL($page.url);
+    url.searchParams.set('type', type);
+    await goto(url.toString(), { replaceState: true, noScroll: true });
+    await load();
+  }
+
+  async function changeSort(newSort: VaultSortKey) {
+    sort = newSort;
+    offset = 0;
+    const url = new URL($page.url);
+    url.searchParams.set('sort', newSort);
+    await goto(url.toString(), { replaceState: true, noScroll: true });
+    await load();
+  }</script>
 
 <svelte:head>
   <title>Browse vault · Language Brain</title>
