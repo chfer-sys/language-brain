@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from '$app/state';
+  import { goto } from '$app/navigation';
   import { getUnit, type UnitDetail, type ConnectionKind } from '$lib/api';
   import HanziWithPinyin from '$lib/components/HanziWithPinyin.svelte';
 
@@ -107,7 +108,7 @@
 </svelte:head>
 
 <main class="page">
-  <a class="back" href="/">← Back to search</a>
+  <button type="button" class="back" data-testid="back-link" on:click={() => history.length > 1 ? history.back() : goto('/')}>← Back</button>
 
   {#if loading}
     <p class="status">Loading {routeId}…</p>
@@ -202,6 +203,11 @@
     text-decoration: none;
     display: inline-block;
     margin-bottom: 16px;
+    cursor: pointer;
+    border: none;
+    background: none;
+    padding: 0;
+    font: inherit;
   }
 
   .back:hover,
