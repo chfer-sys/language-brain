@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { page } from '$app/state';
+  import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { getUnit, type UnitDetail, type ConnectionKind } from '$lib/api';
   import HanziWithPinyin from '$lib/components/HanziWithPinyin.svelte';
@@ -12,13 +12,12 @@
   // SvelteKit 2: dynamic route params live on `page.params` from
   // $app/state. Reactive — navigating between unit pages re-runs
   // this block without remounting the component.
-  $: routeId = page.params.id;
-  $: if (routeId && routeId !== lastLoadedId) {
-    lastLoadedId = routeId;
-    load(routeId);
-  }
+  $: routeId = $page.params.id;
+  $: if (routeId) load(routeId);
 
   async function load(unitId: string) {
+    if (unitId === lastLoadedId && unit) return;
+    lastLoadedId = unitId;
     loading = true;
     error = null;
     unit = null;

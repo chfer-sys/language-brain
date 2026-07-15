@@ -872,3 +872,34 @@ At current scale (14 sentences), search is comfortably fast.
 **v0.5 search parity + performance validation: benchmark done,
 optimization deferred. v0.5 is functionally complete.**
 
+## v0.8.5 — Unit page stale-render fix (2026-07-16)
+
+### Bug
+Clicking a chip/connection link on `/unit/<id>` updated the browser URL
+but the component kept rendering the previous unit's data (stale title,
+properties, connections).
+
+### Root cause
+Self-mutating `lastLoadedId` inside the `$: if (routeId !== lastLoadedId)`
+reactive block did not reliably re-fire on SvelteKit client-side
+navigation when `page.params.id` changed. Additionally, `$app/state`'s
+`page` object does not properly trigger `$:` reactive statements in
+Svelte 5 on client-side navigation — the diagnosis missed this part.
+
+### Fix (commit `13afdee`)
+- Switched from `$app/state` to `$app/stores` (`$page` store subscription)
+  so Svelte's reactivity properly tracks route param changes.
+- Moved the dedup guard inside `load()` so the reactive trigger is pure:
+  `$: if (routeId) load(routeId);` — no longer self-mutating.
+- Deduplication: `if (unitId === lastLoadedId && unit) return;` at top of
+  `load()`.
+
+### Branch
+`kickoff/v0.8.5-unit-stale-render` (off `4b0b563`).
+
+### Verification
+- Playwright: S24 → click C147 chip → page refetches and renders C147
+  data (title "分钟", not "3分钟后到达"). Connection link nav also works.
+- unit-detail.spec.ts: 4/14 pass (unchanged; 10 fail due to pre-existing
+  localhost vs 127.0.0.1 mock mismatch — out of scope).
+
