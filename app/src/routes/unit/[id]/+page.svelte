@@ -63,7 +63,7 @@
         { key: 'english' },
         { key: 'meaning' },
         { key: 'words', renderAs: 'csv' },
-        { key: 'word_refs', renderAs: 'csv' },
+        { key: 'word_refs', renderAs: 'chips' },
         { key: 'groups', renderAs: 'chips' },
         // Antonyms are bare hanzi characters per Note 3 / T2; render
         // them as chips for visual scanability.
