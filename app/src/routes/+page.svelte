@@ -27,7 +27,8 @@
   let types: Record<UnitType, boolean> = {
     sentence: true,
     word: true,
-    group: true
+    group: true,
+    compound: true
   };
 
   // AC23 debounce. Each keystroke (or toggle/filter change) resets the
@@ -118,6 +119,7 @@
   </div>
 
   <nav class="add-link-row" aria-label="Primary">
+    <a class="add-link" href="/vault">Browse vault</a>
     <a class="add-link" href="/add">+ Add sentence</a>
   </nav>
 </div>

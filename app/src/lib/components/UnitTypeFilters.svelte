@@ -12,10 +12,11 @@
     group: true
   };
 
-  const ORDER: UnitType[] = ['sentence', 'word', 'group'];
+  const ORDER: UnitType[] = ['sentence', 'word', 'compound', 'group'];
   const SHORT_LABELS: Record<UnitType, string> = {
     sentence: 'sent',
     word: 'words',
+    compound: 'cmpd',
     group: 'groups'
   };
 

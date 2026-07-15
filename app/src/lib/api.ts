@@ -1,7 +1,9 @@
 // Typed fetch wrapper for the FastAPI backend.
 // Mirrors the contracts defined in SPEC §5.3.
 
-export type UnitType = 'sentence' | 'word' | 'group';
+export type UnitType = 'sentence' | 'word' | 'group' | 'compound';
+export type VaultBrowseType = 'sentence' | 'word' | 'compound';
+export type VaultSortKey = 'id' | 'pinyin';
 export type ConnectionKind = 'lexical' | 'semantic' | 'group' | 'opposite';
 
 export interface SearchResult {
@@ -17,6 +19,22 @@ export interface SearchResult {
 export interface SearchResponse {
   query: string;
   results: SearchResult[];
+}
+
+// Vault browse (v0.7) — mirrors GET /api/vault/list response shape.
+export interface VaultListItem {
+  id: string;
+  name: string;
+  snippet: string;
+}
+
+export interface VaultListResponse {
+  type: VaultBrowseType;
+  total: number;
+  limit: number;
+  offset: number;
+  sort: VaultSortKey;
+  items: VaultListItem[];
 }
 
 export interface SuggestResult {
@@ -116,6 +134,19 @@ export async function suggest(
   if (types?.length) params.set('types', types.join(','));
   const res = await fetch(`${API_BASE}/api/search/suggest?${params}`, { signal });
   if (!res.ok) throw new Error(`suggest failed: ${res.status}`);
+  return res.json();
+}
+
+export async function vaultList(
+  type: VaultBrowseType,
+  opts: { limit?: number; offset?: number; sort?: VaultSortKey } = {}
+): Promise<VaultListResponse> {
+  const params = new URLSearchParams({ type });
+  if (opts.limit != null) params.set('limit', String(opts.limit));
+  if (opts.offset != null) params.set('offset', String(opts.offset));
+  if (opts.sort) params.set('sort', opts.sort);
+  const res = await fetch(`${API_BASE}/api/vault/list?${params}`);
+  if (!res.ok) throw new Error(`vaultList failed: ${res.status}`);
   return res.json();
 }
 
