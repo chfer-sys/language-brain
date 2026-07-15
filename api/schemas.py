@@ -111,8 +111,9 @@ class CommitSentenceResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-UnitType = Literal["sentence", "word", "group"]
+UnitType = Literal["sentence", "word", "compound", "group"]
 ConnectionKind = Literal["lexical", "semantic", "group", "opposite"]
+VaultListType = Literal["sentence", "word", "compound", "group"]
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +266,56 @@ class MeaningsResponse(BaseModel):
     results: list[MeaningSentenceItem]
 
 
+# ---------------------------------------------------------------------------
+# GET /api/vault/list — browse vault by category (v0.7)
+# ---------------------------------------------------------------------------
+
+
+class VaultListItem(BaseModel):
+    """One entry in a :class:`VaultListResponse`.
+
+    Fields are deliberately minimal: only what the browse UI needs to
+    render a row. Per SPEC §3 and AC2, ``english`` and ``meaning``
+    are intentionally absent — the endpoint never surfaces them.
+    """
+
+    id: str
+    name: str = Field(description="Hanzi — the unit's display string.")
+    snippet: str = Field(description="Pinyin — the unit's tone-marked reading.")
+
+
+class VaultListResponse(BaseModel):
+    """Body of the vault-list response (SPEC §3).
+
+    ``type`` echoes the requested category so the frontend can
+    confirm which tab is active. ``total`` is the count of all
+    matching units (before pagination). ``items`` is the paginated
+    slice; each item carries ``id``, ``name`` (hanzi), and
+    ``snippet`` (pinyin) — no ``english`` or ``meaning`` (AC2).
+    """
+
+    type: str
+    total: int
+    limit: int
+    offset: int
+    sort: str
+    items: list[VaultListItem]
+
+
+class VaultListParams(BaseModel):
+    """Query parameters for :func:`api.routes.vault.list_vault`.
+
+    Typed as a Pydantic model so FastAPI's validator machinery can
+    enforce the constraints (range checks, literal union) and return
+    a descriptive 422 when they are violated.
+    """
+
+    type: VaultListType
+    limit: int = Field(default=50, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)
+    sort: Literal["id", "pinyin"] = "id"
+
+
 __all__ = [
     "CommitSentenceRequest",
     "CommitSentenceResponse",
@@ -279,4 +330,8 @@ __all__ = [
     "SuggestionItem",
     "SuggestResponse",
     "UnitType",
+    "VaultListItem",
+    "VaultListParams",
+    "VaultListResponse",
+    "VaultListType",
 ]
