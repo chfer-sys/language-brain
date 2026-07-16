@@ -903,3 +903,33 @@ Svelte 5 on client-side navigation — the diagnosis missed this part.
 - unit-detail.spec.ts: 4/14 pass (unchanged; 10 fail due to pre-existing
   localhost vs 127.0.0.1 mock mismatch — out of scope).
 
+## v0.8.6 — chip-name resolution for word_refs and groups
+
+**What**: Sentence `word_refs` chips showed raw unit IDs (`C147`, `W202`,
+`C888`); word `groups` chips showed raw group IDs (`G6`). Clicking
+worked but the label was not meaningful.
+
+**Root cause**: The chip rendering passed the raw ID array directly to
+the template; no resolution step existed.
+
+**Fix (commit `084bc1b`)**
+- `api/routes/units.py`: Add `word_refs_resolved` dict for sentences
+  (ID → hanzi) and `groups_resolved` dict for words/compounds (ID →
+  display_name). Both reuse the existing `_connection_name` helper.
+- `app/src/lib/api.ts`: Add `word_refs_resolved?: Record<string,string>`
+  and `groups_resolved?: Record<string,string>` to `UnitDetail` type.
+- `app/src/routes/unit/[id]/+page.svelte`: `topProps()` now passes a
+  `resolvedMap` alongside the chip fields. A `chipLabel(id, resolvedMap)`
+  helper returns `resolvedMap[id] ?? id`. The chip template calls this
+  for display text while keeping the original ID in `href`.
+
+**Verification**
+- `curl /api/units/S24`: `word_refs_resolved: {"C147":"分钟","W202":"后","C888":"到达"}` ✅
+- Playwright on S24: chips show `分钟`, `后`, `到达` (not C147, W202, C888) ✅
+- Cross-check: each chip text matches the linked unit's hanzi ✅
+- pytest `test_units_route.py`: 11/11 pass ✅
+- pytest `test_vault_list.py` + `test_connector.py`: 67/67 pass ✅
+- unit-detail.spec.ts: 4/14 (pre-existing baseline, unchanged) ✅
+
+**Branch**: `kickoff/v0.8.6-unit-refs-show-names` (off `2148981`).
+
