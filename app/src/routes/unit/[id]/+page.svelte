@@ -53,9 +53,9 @@
     return out;
   })();
 
-  function topProps(u: UnitDetail): { key: string; value: unknown; renderAs?: 'chips' | 'csv' }[] {
+  function topProps(u: UnitDetail): { key: string; value: unknown; renderAs?: 'chips' | 'csv'; resolvedMap?: Record<string, string> }[] {
     const p = u.properties;
-    const known: { key: string; renderAs?: 'chips' | 'csv' }[] = [];
+    const known: { key: string; renderAs?: 'chips' | 'csv'; resolvedMap?: Record<string, string> }[] = [];
     if (u.type === 'sentence') {
       known.push(
         { key: 'hanzi' },
@@ -63,7 +63,7 @@
         { key: 'english' },
         { key: 'meaning' },
         { key: 'words', renderAs: 'csv' },
-        { key: 'word_refs', renderAs: 'chips' },
+        { key: 'word_refs', renderAs: 'chips', resolvedMap: u.word_refs_resolved },
         { key: 'groups', renderAs: 'chips' },
         // Antonyms are bare hanzi characters per Note 3 / T2; render
         // them as chips for visual scanability.
@@ -75,7 +75,7 @@
         { key: 'pinyin' },
         { key: 'english' },
         { key: 'meaning' },
-        { key: 'groups', renderAs: 'chips' },
+        { key: 'groups', renderAs: 'chips', resolvedMap: u.groups_resolved },
         { key: 'antonyms', renderAs: 'chips' }
       );
     } else if (u.type === 'group') {
@@ -90,8 +90,13 @@
       .map((k) => ({
         key: k.key,
         renderAs: k.renderAs,
+        resolvedMap: k.resolvedMap,
         value: (p as Record<string, unknown>)[k.key]
       }));
+  }
+
+  function chipLabel(id: string, resolvedMap?: Record<string, string>): string {
+    return resolvedMap?.[id] ?? id;
   }
 
   function formatValue(v: unknown): string {
@@ -128,16 +133,16 @@
     <section class="properties" data-testid="unit-properties">
       <h2>Properties</h2>
       <dl>
-        {#each topProps(unit) as { key, value, renderAs } (key)}
+        {#each topProps(unit) as { key, value, renderAs, resolvedMap } (key)}
           <dt>{key}</dt>
           <dd>
             {#if renderAs === 'chips' && Array.isArray(value)}
               <span class="chips-readonly">
                 {#each value as chip (chip)}
                   {#if key === 'word_refs'}
-                    <a href="/unit/{encodeURIComponent(chip)}" class="chip chip-link" data-testid="prop-{key}-chip-{chip}">{chip}</a>
+                    <a href="/unit/{encodeURIComponent(chip)}" class="chip chip-link" data-testid="prop-{key}-chip-{chip}">{chipLabel(chip, resolvedMap)}</a>
                   {:else}
-                    <span class="chip chip-readonly" data-testid="prop-{key}-chip-{chip}">{chip}</span>
+                    <span class="chip chip-readonly" data-testid="prop-{key}-chip-{chip}">{chipLabel(chip, resolvedMap)}</span>
                   {/if}
                 {/each}
               </span>

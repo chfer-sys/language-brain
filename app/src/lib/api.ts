@@ -99,6 +99,8 @@ export interface UnitDetail {
   updated: string;
   author_confirmed: boolean;
   containing_sentences?: { id: string; name: string }[];
+  word_refs_resolved?: Record<string, string>;
+  groups_resolved?: Record<string, string>;
 }
 
 export async function getUnit(id: string): Promise<UnitDetail> {

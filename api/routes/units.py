@@ -170,6 +170,27 @@ def get_unit(unit_id: str) -> dict:
                     resolved_antonyms.append(a)
             data["properties"]["antonyms"] = resolved_antonyms
 
+        # Resolve word_refs (sentence property) IDs → hanzi.
+        # Add a parallel word_refs_resolved dict so the frontend can
+        # display the actual hanzi while keeping the ID in the href.
+        if data.get("type") == "sentence":
+            word_refs = data.get("properties", {}).get("word_refs", []) or []
+            data["word_refs_resolved"] = {
+                ref_id: _connection_name(settings.vault, ref_id, _name_cache)
+                for ref_id in word_refs
+                if isinstance(ref_id, str)
+            }
+
+        # Resolve groups (word/compound property) group-IDs → display_name.
+        # Sentences store group handles (e.g. "travel") directly, no resolution needed.
+        if data.get("type") in ("word", "compound"):
+            groups = data.get("properties", {}).get("groups", []) or []
+            data["groups_resolved"] = {
+                grp_id: _connection_name(settings.vault, grp_id, _name_cache)
+                for grp_id in groups
+                if isinstance(grp_id, str)
+            }
+
         return data
 
     raise HTTPException(
