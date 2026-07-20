@@ -1,13 +1,38 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
-  import { getUnit, type UnitDetail, type ConnectionKind } from '$lib/api';
+  import { getUnit, suggest, type UnitDetail, type ConnectionKind } from '$lib/api';
   import HanziWithPinyin from '$lib/components/HanziWithPinyin.svelte';
+  import GroupChips from '$lib/components/GroupChips.svelte';
+  import AntonymChips from '$lib/components/AntonymChips.svelte';
+  import { onMount } from 'svelte';
 
   let unit: UnitDetail | null = null;
   let loading = true;
   let error: string | null = null;
   let lastLoadedId: string | null = null;
+
+  // Edit-mode state (v0.9 Edit UI — ponytail: onMount loads existing groups
+  // for GroupChips suggestions; deduped against the add-page pattern.)
+  let editMode = false;
+  let saving = false;
+  let savedIndicator = false;
+  let editPinyin = '';
+  let editEnglish = '';
+  let editMeaning = '';
+  let editWordsCsv = '';
+  let editWordRefsCsv = '';
+  let editGroups: string[] = [];
+  let editAntonyms: string[] = [];
+  let existingGroups: { id: string; display_name: string }[] = [];
+
+  onMount(async () => {
+    const resp = await suggest('', 50, undefined, ['group']);
+    existingGroups = resp.map((r) => ({
+      id: r.id,
+      display_name: r.name || r.id,
+    }));
+  });
 
   // SvelteKit 2: dynamic route params live on `page.params` from
   // $app/state. Reactive — navigating between unit pages re-runs
