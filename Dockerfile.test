@@ -30,7 +30,10 @@ COPY scripts ./scripts
 
 # Long pip timeout because torch + transformers are huge and the
 # host network is occasionally slow. Retry on transient failures.
-RUN pip install --no-cache-dir --default-timeout=600 --retries 5 -e ".[dev]"
+RUN pip install --no-cache-dir --default-timeout=600 --retries 5 \
+    --index-url https://download.pytorch.org/whl/cpu \
+    --extra-index-url https://pypi.org/simple \
+    -e ".[dev]"
 
 # Default: run pytest. Any CMD override runs the given command directly.
 CMD ["pytest", "tests/", "-v"]

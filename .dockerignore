@@ -1,0 +1,41 @@
+# Git
+.git/
+.gitignore
+
+# Python cache
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Environment
+.env
+.env.example
+
+# Vault (mounted at runtime, never baked in)
+vault/
+
+# Frontend build artifacts
+app/node_modules/
+app/.svelte-kit/
+app/build/
+app/test-results/
+app/playwright-report/
+app/.playwright-mcp/
+
+# Specs
+.specs/screenshots/
+
+# Playwright
+.playwright-mcp/
+
+# Logs
+*.log
+
+# Local tool state
+.opencode/
+.osgrep/
