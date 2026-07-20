@@ -182,7 +182,54 @@ def add_member_to_group(
     return group_unit
 
 
+def remove_member_from_group(
+    vault_root: str,
+    group_id: str,
+    member_id: str,
+) -> dict:
+    """Remove ``member_id`` from the group's ``properties.members`` list.
+
+    Idempotent — removing a member that is not present is a no-op.
+    If the group does not exist, raises FileNotFoundError.
+
+    The unit is read, the member list filtered, and the file rewritten
+    via write_unit inside a single logical transaction.
+    """
+    if not isinstance(group_id, str) or not group_id:
+        raise ValueError("group_id must be a non-empty string")
+    if not isinstance(member_id, str) or not member_id:
+        raise ValueError("member_id must be a non-empty string")
+
+    group_unit: dict[str, Any] = read_unit(vault_root, "group", group_id)
+
+    if group_unit.get("type") != "group":
+        raise ValueError(
+            f"unit at id {group_id!r} has type "
+            f"{group_unit.get('type')!r}, expected 'group'"
+        )
+
+    properties = group_unit.get("properties")
+    if not isinstance(properties, dict):
+        properties = {}
+        group_unit["properties"] = properties
+
+    members = properties.get("members")
+    if not isinstance(members, list):
+        members = []
+        properties["members"] = members
+
+    # Filter out the member (order-preserving for any remaining members).
+    properties["members"] = [m for m in members if m != member_id]
+
+    # Refresh the timestamp.
+    group_unit["updated"] = _today_iso()
+
+    write_unit(vault_root, group_unit)
+    return group_unit
+
+
 __all__ = [
     "ensure_group_unit",
     "add_member_to_group",
+    "remove_member_from_group",
 ]
