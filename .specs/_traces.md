@@ -1013,3 +1013,127 @@ Docker image, and switch to CPU-only torch.
 - Edit-UI bugs fixed: missing `editSentence`/`editWord` implementations, missing imports, onSave async-state short-circuit.
 - Dead code deduped: `_normalize_groups_input` now imported from `commit_sentence`, unused `ensure_group_unit` import removed.
 
+### Deploy to LAN (2026-07-21)
+
+**Phase 1 — Current state found**
+
+- **Container**: `language-brain` (name), image `language-brain:latest`
+- **Running since**: 4 days before deploy (uptime confirmed via `docker ps`)
+- **Git version on LAN**: `8fd9de581f441aae3903263ae1a62782aaaf5474` (v0.8.6, `main` branch)
+- **Repo layout**: `/opt/language-brain/src/` is the git checkout; `/opt/language-brain/` is the deploy root (separate from git checkout — no `.git` in deploy root)
+- **Vault path**: `/opt/language-brain/vault` (host) → `/app/vault` (container) — **DO NOT OVERWRITE**
+- **Vault contents**: 1292 word files, 88 sentence files (LAN vault is more populated than Mac vault)
+- **HF cache**: `/opt/language-brain/hf-cache` → `/root/.cache/huggingface` (preserved)
+- **Static build**: `/opt/language-brain/app/build` → `/app/static` (preserved)
+- **Deploy mechanism**: Docker, manual `docker run` (no docker-compose or systemd)
+- **Cmd**: `uvicorn api.main:app --host 0.0.0.0 --port 8000`
+- **Env**: `LANGUAGE_BRAIN_AI_KEY`, `LANGUAGE_BRAIN_AI_ENDPOINT`, `LANGUAGE_BRAIN_AI_MODEL`, `HF_ENDPOINT`, `HF_HOME`, `LANGUAGE_BRAIN_VAULT`
+
+**Phase 2 — Sync method: Option B (rsync)**
+
+Mac git remote is GitHub — not reachable from LAN server. Option A (git push to Mac) not feasible.
+Rsync used to sync `api/`, `scripts/`, root-level files from Mac to LAN deploy root `/opt/language-brain/`.
+
+Commands:
+```bash
+# Sync api/
+rsync -av --exclude='vault/' --exclude='hf-cache/' --exclude='app/node_modules/' \
+  --exclude='.git/' --exclude='__pycache__/' --exclude='.pytest_cache/' \
+  --exclude='app/build/' --exclude='*.pyc' \
+  -e "ssh -o ConnectTimeout=10" \
+  /Users/christoferi/lantern/projects/language-brain/api/ \
+  root@192.168.100.101:/opt/language-brain/
+
+# Sync scripts/
+rsync -av --exclude='vault/' --exclude='hf-cache/' --exclude='app/node_modules/' \
+  --exclude='.git/' --exclude='__pycache__/' --exclude='.pytest_cache/' \
+  --exclude='app/build/' --exclude='*.pyc' \
+  -e "ssh -o ConnectTimeout=10" \
+  /Users/christoferi/lantern/projects/language-brain/scripts/ \
+  root@192.168.100.101:/opt/language-brain/scripts/
+
+# Sync root-level files (pyproject.toml, AGENTS.md, etc.)
+rsync -av --exclude='vault/' --exclude='hf-cache/' --exclude='app/' \
+  --exclude='.git/' --exclude='__pycache__/' --exclude='.pytest_cache/' \
+  --exclude='app/build/' --exclude='*.pyc' \
+  -e "ssh -o ConnectTimeout=10" \
+  /Users/christoferi/lantern/projects/language-brain/ \
+  root@192.168.100.101:/opt/language-brain/
+```
+
+**Phase 3 — Rebuild on LAN (x86_64, CPU-only torch)**
+
+```bash
+ssh root@192.168.100.101 'cd /opt/language-brain && docker build -f Dockerfile -t language-brain:latest .'
+```
+Build time: ~122s. Torch CPU-only wheel downloaded and installed successfully.
+
+**Phase 4 — Container restart**
+
+Old container stopped and removed. New container started with same mounts + env vars.
+Before rebuild, tagged old image for rollback: `docker tag language-brain:latest language-brain:v0.8.6`.
+
+```bash
+docker run -d \
+  --name language-brain \
+  -p 8000:8000 \
+  -v /opt/language-brain/vault:/app/vault \
+  -v /opt/language-brain/hf-cache:/root/.cache/huggingface \
+  -v /opt/language-brain/app/build:/app/static \
+  -e LANGUAGE_BRAIN_VAULT=/app/vault \
+  -e HF_ENDPOINT=https://hf-mirror.com \
+  -e HF_HOME=/root/.cache/huggingface \
+  -e LANGUAGE_BRAIN_AI_KEY=sk-cp-JRVfuT5Rd0z_A1SJMBJh5iqf4tiOmvjg3l2ejn2xTrryUYv69mBBM8siOhh6zH6HNOMvr2GbFAIhPkKV1kCzlK_P309yXe4DeGd4ADiSzt9dFbF1k_OcmLk \
+  -e LANGUAGE_BRAIN_AI_ENDPOINT=https://api.minimax.io/v1 \
+  -e LANGUAGE_BRAIN_AI_MODEL=MiniMax-M2.1 \
+  -e LANGUAGE_BRAIN_GIT_COMMIT=198907e \
+  -e LANGUAGE_BRAIN_GIT_BRANCH=kickoff/v0.9-integration \
+  language-brain:latest
+```
+
+**Critical fix discovered during deploy**: `api/routes/version.py` computed git metadata at
+module import time from `subprocess.git()` calls only — `LANGUAGE_BRAIN_GIT_COMMIT` and
+`LANGUAGE_BRAIN_GIT_BRANCH` env vars were documented as fallbacks in `get_version_info()` but
+never actually read. Fixed by adding `os.environ.get()` checks in `get_version_info()`.
+Committed as `04beb1d` on `kickoff/v0.9-integration`.
+
+**Phase 5 — Verification results (all pass)**
+
+```
+GET /healthz
+  → {"status":"ok","vault":"/app/vault","ai_model":"MiniMax-M2.1",
+     "git_commit":"198907e","git_branch":"kickoff/v0.9-integration"}  ✅
+
+GET /api/version
+  → {"version":"0.9.0","git_commit":"198907e",
+     "git_branch":"kickoff/v0.9-integration","python_version":"3.12.13"}  ✅
+
+GET /api/units/C2
+  → compound with containing_sentences (3 items) ✅
+     constituent_characters: [] (C2 is 2-char compound, empty is correct) ✅
+
+PUT /api/sentences/S1 {} 
+  → 422 {"detail":[{"msg":"Field required","loc":["body","hanzi"]}]}  ✅
+
+GET / 
+  → HTTP 200 ✅
+```
+
+**New container name**: `language-brain`
+**Git commit deployed**: `198907e6de64e2863e2780d45ad070b2d51c08e0`
+**Branch deployed**: `kickoff/v0.9-integration`
+**Image tag**: `language-brain:latest` (prior image tagged `language-brain:v0.8.6` for rollback)
+
+**Rollback procedure** (if needed):
+```bash
+# Stop current
+ssh root@192.168.100.101 'docker stop language-brain && docker rm language-brain'
+
+# Restart old image (layers still present, just untagged)
+# Use: docker run -d --name language-brain -p 8000:8000 \
+#   [same -v and -e flags as above] \
+#   17e63fb8c2c2   # old image ID (pre-deploy, created 2026-07-16)
+```
+
+**URL for user**: http://192.168.100.101:8000
+
