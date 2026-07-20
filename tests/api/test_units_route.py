@@ -293,3 +293,195 @@ def test_get_unit_includes_containing_sentence_names(client_with_vault):
     assert len(sentences) == 1
     assert sentences[0]["id"] == "s-1"
     assert sentences[0]["name"] == "我喜欢吃"
+
+
+# ---------------------------------------------------------------------------
+# Compound enrichment (v0.9)
+# ---------------------------------------------------------------------------
+
+
+def _seed_compound_with_sentence(vault: str) -> str:
+    """Write a compound C2 (什么) and a sentence whose word_refs includes C2."""
+    write_unit(
+        vault,
+        {
+            "id": "C2",
+            "type": "compound",
+            "name": "什么",
+            "properties": {
+                "hanzi": "什么",
+                "pinyin": "shénme",
+                "english": "what",
+                "meaning": "interrogative pronoun",
+                "groups": [],
+                "antonyms": [],
+            },
+            "connections": [],
+            "created": "2026-07-01",
+            "updated": "2026-07-01",
+            "author_confirmed": True,
+        },
+    )
+    write_unit(
+        vault,
+        {
+            "id": "s-compound-test",
+            "type": "sentence",
+            "name": "这是什么",
+            "properties": {
+                "hanzi": "这是什么",
+                "pinyin": "zhè shì shénme",
+                "english": "what is this",
+                "meaning": "",
+                "words": ["这", "是", "什么"],
+                "word_refs": ["zhè", "shì", "C2"],
+                "groups": [],
+                "antonyms": [],
+            },
+            "connections": [],
+            "created": "2026-07-01",
+            "updated": "2026-07-01",
+            "author_confirmed": True,
+        },
+    )
+    return "C2"
+
+
+def _seed_compound_with_constituents(vault: str) -> str:
+    """Write compound C2 (什么) plus single-char word units 什 and 么."""
+    write_unit(
+        vault,
+        {
+            "id": "C2",
+            "type": "compound",
+            "name": "什么",
+            "properties": {
+                "hanzi": "什么",
+                "pinyin": "shénme",
+                "english": "what",
+                "meaning": "interrogative pronoun",
+                "groups": [],
+                "antonyms": [],
+            },
+            "connections": [],
+            "created": "2026-07-01",
+            "updated": "2026-07-01",
+            "author_confirmed": True,
+        },
+    )
+    write_unit(
+        vault,
+        {
+            "id": "shénme",
+            "type": "word",
+            "name": "什",
+            "properties": {
+                "hanzi": "什",
+                "pinyin": "shén",
+                "english": "什 (radical)",
+                "meaning": "",
+                "groups": [],
+                "antonyms": [],
+            },
+            "connections": [],
+            "created": "2026-07-01",
+            "updated": "2026-07-01",
+            "author_confirmed": True,
+        },
+    )
+    write_unit(
+        vault,
+        {
+            "id": "me",
+            "type": "word",
+            "name": "么",
+            "properties": {
+                "hanzi": "么",
+                "pinyin": "me",
+                "english": "么 (structural)",
+                "meaning": "",
+                "groups": [],
+                "antonyms": [],
+            },
+            "connections": [],
+            "created": "2026-07-01",
+            "updated": "2026-07-01",
+            "author_confirmed": True,
+        },
+    )
+    return "C2"
+
+
+def test_get_compound_includes_containing_sentences(client_with_vault):
+    """Compound detail page carries containing_sentences — sentence whose
+    word_refs includes the compound id."""
+    client, vault = client_with_vault
+    _seed_compound_with_sentence(vault)
+    resp = client.get("/api/units/C2")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["type"] == "compound"
+    assert len(body["containing_sentences"]) == 1
+    assert body["containing_sentences"][0]["id"] == "s-compound-test"
+    assert body["containing_sentences"][0]["name"] == "这是什么"
+
+
+def test_get_compound_includes_constituent_characters(client_with_vault):
+    """Compound detail page carries constituent_characters — single-char word
+    units whose hanzi appear in the compound's hanzi string."""
+    client, vault = client_with_vault
+    _seed_compound_with_constituents(vault)
+    resp = client.get("/api/units/C2")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["type"] == "compound"
+    chars = body["constituent_characters"]
+    assert len(chars) == 2
+    ids = {c["id"] for c in chars}
+    assert ids == {"shénme", "me"}
+    names = {c["name"] for c in chars}
+    assert names == {"什", "么"}
+
+
+def test_get_compound_constituents_empty_when_no_matches(client_with_vault):
+    """Compound whose hanzi characters have no matching word units returns
+    constituent_characters as an empty list (not missing)."""
+    client, vault = client_with_vault
+    write_unit(
+        vault,
+        {
+            "id": "C2",
+            "type": "compound",
+            "name": "什么",
+            "properties": {
+                "hanzi": "什么",
+                "pinyin": "shénme",
+                "english": "what",
+                "meaning": "interrogative pronoun",
+                "groups": [],
+                "antonyms": [],
+            },
+            "connections": [],
+            "created": "2026-07-01",
+            "updated": "2026-07-01",
+            "author_confirmed": True,
+        },
+    )
+    resp = client.get("/api/units/C2")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["type"] == "compound"
+    assert body["constituent_characters"] == []
+
+
+def test_get_word_response_unchanged(client_with_vault):
+    """Regression guard: word units still carry containing_sentences and
+    do NOT carry constituent_characters."""
+    client, vault = client_with_vault
+    _seed_three_units(vault)
+    resp = client.get("/api/units/chī")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["type"] == "word"
+    assert "containing_sentences" in body
+    assert "constituent_characters" not in body

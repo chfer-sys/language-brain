@@ -28,6 +28,7 @@ from fastapi import APIRouter, HTTPException, status
 from api.config import settings
 from api.services.unit_writer import (
     VALID_UNIT_TYPES,
+    list_units_by_type,
     read_unit,
 )
 
@@ -146,6 +147,39 @@ def get_unit(unit_id: str) -> dict:
             data["containing_sentences"] = [
                 {"id": sid, "name": _connection_name(settings.vault, sid, _name_cache)}
                 for sid in sentence_ids
+            ]
+
+        if data.get("type") == "compound":
+            props = data.get("properties", {})
+            compound_hanzi = props.get("hanzi", "") or ""
+            sentence_ids = _sentence_ids_containing_word(
+                settings.vault, unit_id, compound_hanzi
+            )
+            data["containing_sentences"] = [
+                {"id": sid, "name": _connection_name(settings.vault, sid, _name_cache)}
+                for sid in sentence_ids
+            ]
+            # ponytail: O(n) scan over all word files; ceiling is acceptable
+            # at MVP scale (solo-dev vault, low thousands of word files);
+            # upgrade path is v0.5.5 SQLite word table.
+            constituent_cache: dict[str, str] = {}
+            compound_chars = set(compound_hanzi)
+            for word_unit in list_units_by_type(settings.vault, "word"):
+                if word_unit.get("type") != "word":
+                    continue
+                w_props = word_unit.get("properties", {})
+                w_hanzi = w_props.get("hanzi", "") or ""
+                if len(w_hanzi) == 1 and w_hanzi in compound_chars:
+                    # ponytail: name resolution uses _name_cache for repeat hits;
+                    # the local constituent_cache avoids re-reading the same word
+                    # file for each character match.
+                    if word_unit["id"] not in constituent_cache:
+                        constituent_cache[word_unit["id"]] = _connection_name(
+                            settings.vault, word_unit["id"], _name_cache
+                        )
+            data["constituent_characters"] = [
+                {"id": wid, "name": name}
+                for wid, name in sorted(constituent_cache.items())
             ]
 
         # Enrich every connection with its target's display name (hanzi or
