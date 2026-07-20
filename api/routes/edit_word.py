@@ -28,7 +28,7 @@ from api.services.antonym_service import mirror_antonyms
 from api.services.connector import compute_connections
 from api.services.embedder import Embedder, get_embedder
 from api.services.group_helpers import ensure_groups_from_proposed
-from api.services.group_registry import add_member_to_group, ensure_group_unit
+from api.services.group_registry import add_member_to_group, ensure_group_unit, remove_member_from_group
 from api.services.unit_writer import read_unit, write_unit
 
 log = logging.getLogger(__name__)
@@ -62,32 +62,6 @@ def _resolve_group_ids(groups: list[ProposedGroupOut | str]) -> list[str]:
         elif isinstance(g, str):
             out.append(g)
     return out
-
-
-def _remove_member_from_group(
-    vault_root: str, group_id: str, member_id: str
-) -> None:
-    """Remove ``member_id`` from ``group_id.properties.members``.
-
-    Idempotent — a missing member is a no-op. If the group file does
-    not exist, this is also a no-op (the reference is already broken).
-    """
-    try:
-        group_unit = read_unit(vault_root, "group", group_id)
-    except FileNotFoundError:
-        return
-
-    properties = group_unit.get("properties")
-    if not isinstance(properties, dict):
-        return
-    members = properties.get("members")
-    if not isinstance(members, list):
-        return
-
-    if member_id in members:
-        members.remove(member_id)
-        group_unit["updated"] = _today_iso()
-        write_unit(vault_root, group_unit)
 
 
 def _unmirror_antonym_pair(
@@ -259,7 +233,7 @@ def edit_word(word_id: str, body: EditWordRequest) -> EditWordResponse:
 
     # Remove from groups that are no longer referenced.
     for gid in groups_removed:
-        _remove_member_from_group(vault_root, gid, word_id)
+        remove_member_from_group(vault_root, gid, word_id)
 
     # ------------------------------------------------------------------
     # Step 4 — diff antonyms
