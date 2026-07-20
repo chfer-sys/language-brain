@@ -107,6 +107,46 @@ class CommitSentenceResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# PUT /api/sentences/{sentence_id} — edit an existing sentence
+# ---------------------------------------------------------------------------
+
+
+class EditSentenceRequest(BaseModel):
+    """Body for the sentence-edit endpoint.
+
+    ``hanzi`` is echoed back from the client as a read-only guard
+    against accidental edits. ``groups`` semantics are REPLACE: the
+    new list is canonical; the sentence is removed from any prior
+    groups not in the new list.
+    """
+
+    hanzi: str = Field(..., description="Must match the existing sentence's properties.hanzi.")
+    pinyin: str = Field(default="", description="Updated pinyin.")
+    english: str = Field(default="", description="Updated English gloss.")
+    meaning: str = Field(default="", description="Updated rich gloss for semantic search.")
+    words: list[str] = Field(default_factory=list, description="Hanzi tokens (readonly — set by dict segmentation on commit).")
+    word_refs: list[str] = Field(default_factory=list, description="Word/compound ids referenced by this sentence.")
+    groups: list[Union[ProposedGroupOut, str]] = Field(
+        default_factory=list,
+        description="Groups this sentence belongs to (REPLACE semantics).",
+    )
+    antonyms: list[str] = Field(
+        default_factory=list,
+        description="Hanzi or pinyin strings identifying antonym words.",
+    )
+
+
+class EditSentenceResponse(BaseModel):
+    """Body of the sentence-edit response."""
+
+    id: str
+    updated: str
+    connections_summary: dict[str, int]
+    groups_added: list[str]
+    groups_removed: list[str]
+
+
+# ---------------------------------------------------------------------------
 # Shared types (used by T19 commit, T20+ search, etc.)
 # ---------------------------------------------------------------------------
 
@@ -316,10 +356,50 @@ class VaultListParams(BaseModel):
     sort: Literal["id", "pinyin"] = "id"
 
 
+# ---------------------------------------------------------------------------
+# PUT /api/words/{word_id} — edit a word or compound unit (v0.9)
+# ---------------------------------------------------------------------------
+
+
+class EditWordRequest(BaseModel):
+    """Body for the word-edit endpoint.
+
+    Editable fields: ``english``, ``meaning``, ``groups``, ``antonyms``.
+    ``hanzi`` and ``pinyin`` are read-only (dictionary-sourced).
+
+    ``groups`` uses REPLACE semantics: the new list is canonical; the
+    unit is removed from any group not in the new list.
+
+    ``antonyms`` is a list of typed word-unit ids (e.g. ``"W1029"``).
+    """
+
+    english: str = ""
+    meaning: str = ""
+    groups: list[ProposedGroupOut | str] = Field(default_factory=list)
+    antonyms: list[str] = Field(default_factory=list)
+
+
+class EditWordResponse(BaseModel):
+    """Body of the word-edit response."""
+
+    id: str
+    type: str  # "word" or "compound" — echoed from disk so frontend knows
+    updated: str
+    connections_summary: dict[str, int]
+    groups_added: list[str]
+    groups_removed: list[str]
+    antonyms_added: list[str]
+    antonyms_removed: list[str]
+
+
 __all__ = [
     "CommitSentenceRequest",
     "CommitSentenceResponse",
     "ConnectionKind",
+    "EditSentenceRequest",
+    "EditSentenceResponse",
+    "EditWordRequest",
+    "EditWordResponse",
     "MeaningSentenceItem",
     "MeaningsResponse",
     "ProposedGroupOut",
