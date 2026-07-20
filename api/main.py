@@ -71,6 +71,7 @@ from api.routes import pinyin as pinyin_route
 from api.routes import search as search_route
 from api.routes import units as units_route
 from api.routes import vault as vault_route
+from api.routes import version as version_route
 
 configure_root_logger()
 
@@ -113,16 +114,20 @@ app.include_router(search_route.router)
 app.include_router(units_route.router)
 app.include_router(pinyin_route.router)
 app.include_router(vault_route.router)
+app.include_router(version_route.router)
 
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     """Liveness probe — returns the configured vault path (no secrets)."""
+    v = version_route.get_version_info()
     return {
         "status": "ok",
         "vault": settings.vault,
         "ai_model": settings.ai_model,
         "mock_mode": "true" if settings.ai_key is None else "false",
+        "git_commit": v["git_commit"],
+        "git_branch": v["git_branch"],
     }
 
 

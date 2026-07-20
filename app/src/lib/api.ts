@@ -240,7 +240,23 @@ export async function editWord(
   });
   if (!res.ok) {
     const detail = await res.text();
-    throw new Error(`editWord failed: ${res.status} ${detail}`);
+    throw new Error(`editWord failed: ${res.status}: ${detail}`);
   }
+  return res.json();
+}
+
+// ─── Version info ─────────────────────────────────────────────────────────────
+
+export interface VersionInfo {
+  version: string;
+  git_commit: string;
+  git_branch: string;
+  python_version?: string;
+  timestamp?: string;
+}
+
+export async function getVersion(): Promise<VersionInfo> {
+  const res = await fetch(`${API_BASE}/api/version`);
+  if (!res.ok) throw new Error(`getVersion failed: ${res.status}`);
   return res.json();
 }
