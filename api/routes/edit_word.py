@@ -28,7 +28,7 @@ from api.services.antonym_service import mirror_antonyms
 from api.services.connector import compute_connections
 from api.services.embedder import Embedder, get_embedder
 from api.services.group_helpers import ensure_groups_from_proposed
-from api.services.group_registry import add_member_to_group, ensure_group_unit, remove_member_from_group
+from api.services.group_registry import add_member_to_group, remove_member_from_group
 from api.services.unit_writer import read_unit, write_unit
 
 log = logging.getLogger(__name__)

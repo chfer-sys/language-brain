@@ -31,6 +31,7 @@ from fastapi import APIRouter, HTTPException, status
 
 from api.config import settings
 from api.schemas import EditSentenceRequest, EditSentenceResponse, ProposedGroupOut
+from api.routes.commit_sentence import _normalize_groups_input
 from api.services.connector import compute_connections
 from api.services.antonym_resolver import (
     normalize_antonyms_for_storage,
@@ -63,19 +64,6 @@ def _today_iso() -> str:
 def _get_embedder() -> Embedder:
     """Return the process embedder, with a monkey-patchable seam."""
     return get_embedder()
-
-
-def _normalize_groups_input(
-    raw: list[ProposedGroupOut | str],
-) -> list[ProposedGroupOut | str | dict[str, Any]]:
-    """Coerce ``ProposedGroupOut`` instances into plain dicts."""
-    out: list[ProposedGroupOut | str | dict[str, Any]] = []
-    for item in raw:
-        if isinstance(item, ProposedGroupOut):
-            out.append(item.model_dump())
-        else:
-            out.append(item)
-    return out
 
 
 def _extract_group_ids(groups: list[ProposedGroupOut | str | dict[str, Any]]) -> list[str]:
