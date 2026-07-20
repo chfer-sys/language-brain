@@ -66,6 +66,7 @@ class SPAStaticFiles(StaticFiles):
 from api.routes import add_sentence as add_sentence_route
 from api.routes import commit_sentence as commit_sentence_route
 from api.routes import edit_sentence as edit_sentence_route
+from api.routes import edit_word as edit_word_route
 from api.routes import pinyin as pinyin_route
 from api.routes import search as search_route
 from api.routes import units as units_route
@@ -107,6 +108,7 @@ app.add_middleware(
 app.include_router(add_sentence_route.router)
 app.include_router(commit_sentence_route.router)
 app.include_router(edit_sentence_route.router)
+app.include_router(edit_word_route.router)
 app.include_router(search_route.router)
 app.include_router(units_route.router)
 app.include_router(pinyin_route.router)

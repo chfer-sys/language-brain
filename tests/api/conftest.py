@@ -43,7 +43,7 @@ def _seed_dictionary(vault_root: str) -> None:
 
 
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """A TestClient bound to a fresh ``LANGUAGE_BRAIN_VAULT=tmp_path``.
 
     The dictionary is seeded from ``segment_fixture.txt`` so that
@@ -58,5 +58,23 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
 
     try:
         yield TestClient(app)
+    finally:
+        config_module.get_settings.cache_clear()
+
+
+@pytest.fixture
+def vault_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, Path]:
+    """A TestClient bound to a fresh vault + the tmp_path.
+
+    Like ``client``, but also returns the vault path as a second value.
+    Use this fixture when you need to pre-create vault files before
+    making API calls.
+    """
+    config_module.get_settings.cache_clear()
+    monkeypatch.setenv("LANGUAGE_BRAIN_VAULT", str(tmp_path))
+    monkeypatch.setattr(config_module.settings, "vault", str(tmp_path))
+    _seed_dictionary(str(tmp_path))
+    try:
+        yield TestClient(app), tmp_path
     finally:
         config_module.get_settings.cache_clear()
