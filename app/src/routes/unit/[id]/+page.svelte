@@ -340,9 +340,9 @@
       {/if}
     </section>
 
-    {#if unit.type === 'word' && unit.containing_sentences !== undefined}
+    {#if (unit.type === 'word' || unit.type === 'compound') && unit.containing_sentences !== undefined}
       <section class="containing" data-testid="containing-sentences">
-        <h2>Sentences containing this word <span class="count">({unit.containing_sentences.length})</span></h2>
+        <h2>Sentences containing this unit <span class="count">({unit.containing_sentences.length})</span></h2>
         {#if unit.containing_sentences.length === 0}
           <p class="empty" data-testid="no-containing">This word is not yet referenced by any saved sentence.</p>
         {:else}
@@ -356,6 +356,21 @@
             {/each}
           </ul>
         {/if}
+      </section>
+    {/if}
+
+    {#if unit.type === 'compound' && unit.constituent_characters && unit.constituent_characters.length > 0}
+      <!-- ponytail: constituent_characters is often partial/empty — not every
+          compound char has a corresponding W-unit in the vault yet. -->
+      <section class="constituents" data-testid="constituent-characters">
+        <h2>Constituent characters <span class="count">({unit.constituent_characters.length})</span></h2>
+        <ul>
+          {#each unit.constituent_characters as char (char.id)}
+            <li>
+              <a href="/unit/{encodeURIComponent(char.id)}">{char.name}</a>
+            </li>
+          {/each}
+        </ul>
       </section>
     {/if}
   {/if}
@@ -558,6 +573,29 @@
 
   .containing a:hover,
   .containing a:focus-visible {
+    color: var(--lb-accent);
+    text-decoration: underline;
+  }
+
+  .constituents ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .constituents li {
+    padding: 6px 0;
+    border-bottom: 1px solid var(--lb-border);
+    font-size: 14px;
+  }
+
+  .constituents a {
+    color: var(--lb-fg);
+    text-decoration: none;
+  }
+
+  .constituents a:hover,
+  .constituents a:focus-visible {
     color: var(--lb-accent);
     text-decoration: underline;
   }
