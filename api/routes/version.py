@@ -41,8 +41,8 @@ def get_version_info() -> dict[str, Any]:
     """
     return {
         "version": _VERSION["version"],
-        "git_commit": _VERSION["git_commit"],
-        "git_branch": _VERSION["git_branch"],
+        "git_commit": os.environ.get("LANGUAGE_BRAIN_GIT_COMMIT") or _VERSION["git_commit"],
+        "git_branch": os.environ.get("LANGUAGE_BRAIN_GIT_BRANCH") or _VERSION["git_branch"],
     }
 
 
