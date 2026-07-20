@@ -170,7 +170,7 @@ test('v0.9 smoke — Journey 1: create sentence with manual group assignment', a
  * The API-level PUT works correctly (verified via curl), but the
  * frontend doesn't reload the updated unit into the view after save.
  */
-test.skip('v0.9 smoke — Journey 2: edit sentence to add English meaning (SKIP: broken onSave async flow)', async ({ page }) => {
+test('v0.9 smoke — Journey 2: edit sentence to add English meaning', async ({ page }) => {
   // Create a fresh sentence via the API first so we control its initial state
   const apiResp = await page.request.post('http://127.0.0.1:8000/api/sentences/commit', {
     data: {

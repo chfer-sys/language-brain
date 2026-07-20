@@ -193,6 +193,7 @@
       }
       savedIndicator = true;
       setTimeout(() => (savedIndicator = false), 2000);
+      lastLoadedId = null;
       await load(unit.id);
       editMode = false;
     } catch (e) {
