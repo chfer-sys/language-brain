@@ -933,3 +933,76 @@ the template; no resolution step existed.
 
 **Branch**: `kickoff/v0.8.6-unit-refs-show-names` (off `2148981`).
 
+---
+
+## v0.9 — Edit + Compound Fixes + Docker Slim (2026-07-21)
+
+### Goal
+
+Ship inline edit UI for all unit types (sentence/word/compound), fix the
+compound page Properties panel, wire the `/add` page to stop seeding groups
+from AI proposals, fix punctuation tokenization in the segmenter, slim the
+Docker image, and switch to CPU-only torch.
+
+### Commits on `kickoff/v0.9-integration`
+
+| Hash | From branch | Scope |
+|------|-------------|-------|
+| `2761828` | `kickoff/v0.9-docker-slim` | `.dockerignore` + CPU torch in Dockerfile.test |
+| `e84df1f` | `kickoff/v0.9-edit-word` | dedupe: `remove_member_from_group` in edit_word |
+| `3ad884a` | `kickoff/v0.9-edit-inline` | fix: add missing `let` declarations for Edit UI state |
+| `dcd287a` | `kickoff/v0.9-edit-inline` | inline edit UI for sentence/word/compound unit pages |
+| `0bc0cd3` | `kickoff/v0.9-edit-inline` | ignore AI group proposals — chips start empty |
+| `d220469` | `kickoff/v0.9-edit-inline` | fix: drop non-Hanzi tokens (punctuation) from segmenter |
+| `3ba57b8` | `kickoff/v0.9-edit-word` | `PUT /api/words/{word_id}` endpoint for word/compound |
+| `1a219d5` | `kickoff/v0.9-edit-inline` | `PUT /api/sentences/{id}` edit endpoint |
+| `2d8888f` | `kickoff/v0.9-compound` | compound branch in `topProps()` + UnitTypeFilters |
+| `4705ee1` | `kickoff/v0.9-compound` | compound enrichment: containing_sentences + constituent_characters |
+
+### What landed
+
+- **Compound page now shows Properties** (hanzi/pinyin/english/meaning/groups/antonyms)
+  and sentence links work.
+- **Compound page also shows containing sentences + constituent character word-units**
+  (when they exist).
+- **Edit button on every unit type** (sentence/word/compound). Inline form,
+  `GroupChips` + `AntonymChips` reused.
+- **Sentence edit fields**: pinyin, english, meaning, words, word_refs, groups,
+  antonyms (hanzi read-only).
+- **Word/compound edit fields**: english, meaning, groups, antonyms
+  (hanzi+pinyin read-only).
+- **Group edits use REPLACE semantics**: old groups no longer listed have this
+  unit removed from their members.
+- **`/add` page no longer seeds groups from AI proposals** — user authors
+  manually, with autocomplete from existing groups.
+- **Sentence creation no longer tokenizes punctuation** (`,`, `?`, `。`, etc)
+  as fake hanzi words.
+- **`.dockerignore` added; `Dockerfile.test` switched to CPU torch index URL.**
+
+### Architecture notes (research, not implemented)
+
+- **3 of 4 docker images carry CUDA torch** (+3.5 GB each); rebuild with
+  `docker build --no-cache -f Dockerfile.test -t opencode-language-brain-test:latest .`
+  and same for prod.
+- **Connector is O(n²) per save**; fine today (33 sentences); breaks at
+  ~300-500 sentences.
+- **Connector reads JSON files, NOT the v0.5 SQLite layer.**
+- **No incremental mode** — every save recomputes everything.
+- **Quick wins identified**: embedding cache, .dockerignore (done in this kickoff),
+  CPU torch (done in this kickoff). Long-term: SQLite edges table, lazy ML deps.
+
+### Tests
+
+- **pytest**: 759 passed / 1 failed
+  - The 1 failing test (`test_migrate_round_trip_against_live_vault`) is a
+    pre-existing known failure (migration test predates v0.5.2 typed ids).
+- **vitest**: known baseline — pre-existing mock mismatch (`localhost` vs
+  `127.0.0.1`) per AGENTS.md; unit-detail 4/14, vault_browse 2/7.
+- **New v0.9 tests by file**:
+  - `tests/api/test_edit_sentence_route.py`: 8 tests
+  - `tests/api/test_edit_word_route.py`: 7 tests
+  - `tests/api/test_segmenter_punctuation.py`: 7 tests (punctuation fix)
+  - `tests/api/test_types_filter.py`: 15 tests
+
+**Status: ready for local deploy**
+
