@@ -230,6 +230,17 @@ class Dictionary:
                 ))
                 i += 1
 
+        # ponytail: drop any token whose hanzi is not a CJK character.
+        # Punctuation (comma, question mark, etc.) is not in the word table,
+        # so it arrives here as source="unknown".  Filtering here keeps the
+        # words/word_pinyins parallel lists clean for every consumer
+        # (commit_sentence, _slice_sentence_english, etc.).
+        # Ceiling: if non-CJK tokens like digits must be preserved, replace
+        # this with a specific punctuation allowlist.
+        def _is_cjk(hanzi: str) -> bool:
+            return bool(hanzi) and all("\u4e00" <= ch <= "\u9fff" for ch in hanzi)
+
+        tokens = [t for t in tokens if _is_cjk(t.hanzi)]
         return tokens
 
     def __enter__(self) -> "Dictionary":
