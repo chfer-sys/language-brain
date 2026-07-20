@@ -274,36 +274,66 @@ test('groups field renders as a chip editor (not CSV input)', async ({ page }) =
   await expect(page.locator('[data-testid="groups-input"]')).toBeVisible();
 });
 
-test('seeds chip editor from AI proposed group slugs', async ({ page }) => {
-  setupApiMocks(page);
-  await page.goto('/add');
-  await page.locator('[data-testid="hanzi-input"]').fill('我流口水了');
-  await page.locator('[data-testid="propose-btn"]').click();
-  await expect(page.locator('[data-testid="groups-chip-reactions"]')).toBeVisible({ timeout: 3000 });
-  await expect(page.locator('[data-testid="groups-chip-food"]')).toBeVisible();
-});
-
-test('sends group slug ids (not CSV strings) to commitSentence', async ({ page }) => {
+// v0.9: groups are user-authored — AI proposal is ignored; chips start empty.
+test('v0.9 — group chips are EMPTY after propose (AI proposal ignored)', async ({ page }) => {
   setupApiMocks(page);
   await page.goto('/add');
   await page.locator('[data-testid="hanzi-input"]').fill('我流口水了');
   await page.locator('[data-testid="propose-btn"]').click();
   await expect(page.locator('[data-testid="proposed-form"]')).toBeVisible({ timeout: 3000 });
-  // The chips' presence (tested above) proves slugs were extracted correctly.
-  // Verify save succeeds — the commit payload format is validated by the chip presence.
-  await page.locator('[data-testid="save-btn"]').click();
-  await expect(page.locator('[data-testid="saved"]')).toBeVisible({ timeout: 3000 });
+  // No chips — user authors groups manually
+  const chips = page.locator('[data-testid="groups-editor"] [data-testid^="groups-chip-"]');
+  await expect(chips).toHaveCount(0);
 });
 
-test('user can remove a group chip via its × button', async ({ page }) => {
+test('v0.9 — user can add a group chip manually then remove it', async ({ page }) => {
   setupApiMocks(page);
   await page.goto('/add');
   await page.locator('[data-testid="hanzi-input"]').fill('我流口水了');
   await page.locator('[data-testid="propose-btn"]').click();
-  await expect(page.locator('[data-testid="groups-chip-reactions"]')).toBeVisible({ timeout: 3000 });
-  await page.locator('[data-testid="groups-chip-reactions"] button.chip-remove').click();
-  await expect(page.locator('[data-testid="groups-chip-reactions"]')).not.toBeVisible();
+  await expect(page.locator('[data-testid="groups-editor"]')).toBeVisible({ timeout: 3000 });
+  // Manually add a chip (v0.9: no AI seeding)
+  await page.locator('[data-testid="groups-input"]').fill('travel');
+  await page.locator('[data-testid="groups-input"]').press('Enter');
+  await expect(page.locator('[data-testid="groups-chip-travel"]')).toBeVisible();
+  // Remove it
+  await page.locator('[data-testid="groups-chip-travel"] button.chip-remove').click();
+  await expect(page.locator('[data-testid="groups-chip-travel"]')).not.toBeVisible();
+});
+
+// v0.9: user manually adds groups; slugs (not CSV) are sent to commitSentence.
+test('v0.9 — sends group slug ids (not CSV strings) to commitSentence', async ({ page }) => {
+  setupApiMocks(page);
+  await page.goto('/add');
+  await page.locator('[data-testid="hanzi-input"]').fill('我流口水了');
+  await page.locator('[data-testid="propose-btn"]').click();
+  await expect(page.locator('[data-testid="proposed-form"]')).toBeVisible({ timeout: 3000 });
+  // Manually add a group chip — proves slug format is correct (slug-id, not CSV string)
+  await page.locator('[data-testid="groups-input"]').fill('emotions');
+  await page.locator('[data-testid="groups-input"]').press('Enter');
+  await expect(page.locator('[data-testid="groups-chip-emotions"]')).toBeVisible();
+  await page.locator('[data-testid="save-btn"]').click();
+  await expect(page.locator('[data-testid="saved"]')).toBeVisible({ timeout: 3000 });
+});
+
+// v0.9: removed AI-seeding; user adds chips manually via input or dropdown.
+test('v0.9 — user can remove a manually-added group chip via its × button', async ({ page }) => {
+  setupApiMocks(page);
+  await page.goto('/add');
+  await page.locator('[data-testid="hanzi-input"]').fill('我流口水了');
+  await page.locator('[data-testid="propose-btn"]').click();
+  await expect(page.locator('[data-testid="groups-editor"]')).toBeVisible({ timeout: 3000 });
+  // Manually add two chips
+  await page.locator('[data-testid="groups-input"]').fill('food');
+  await page.locator('[data-testid="groups-input"]').press('Enter');
+  await page.locator('[data-testid="groups-input"]').fill('travel');
+  await page.locator('[data-testid="groups-input"]').press('Enter');
   await expect(page.locator('[data-testid="groups-chip-food"]')).toBeVisible();
+  await expect(page.locator('[data-testid="groups-chip-travel"]')).toBeVisible();
+  // Remove one
+  await page.locator('[data-testid="groups-chip-food"] button.chip-remove').click();
+  await expect(page.locator('[data-testid="groups-chip-food"]')).not.toBeVisible();
+  await expect(page.locator('[data-testid="groups-chip-travel"]')).toBeVisible();
 });
 
 test('user can type a new group name and press Enter to create a chip', async ({ page }) => {

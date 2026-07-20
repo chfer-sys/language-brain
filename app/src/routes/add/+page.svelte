@@ -87,10 +87,9 @@
       meaning = resp.meaning;
       wordsCsv = arrayToCsv(resp.words);
       wordRefsCsv = arrayToCsv(resp.word_refs);
-      groupSlugs = resp.groups.map((g) => {
-        const slug = g.id || g.display_name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-        return slug;
-      });
+      // ponytail: groups are user-authored only — AI proposal is ignored.
+      // User picks from existing groups or types a new slug; GroupChips handles both.
+      groupSlugs = [];
       // Antonyms arrive as hanzi from the AI (per the system prompt).
       // De-duplicate so the chip editor doesn't show duplicates.
       antonyms = Array.from(new Set(resp.antonyms));
