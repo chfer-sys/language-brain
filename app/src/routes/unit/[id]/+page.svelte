@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
-  import { getUnit, suggest, type UnitDetail, type ConnectionKind } from '$lib/api';
+  import { getUnit, suggest, editSentence, editWord, type UnitDetail, type ConnectionKind } from '$lib/api';
   import HanziWithPinyin from '$lib/components/HanziWithPinyin.svelte';
   import GroupChips from '$lib/components/GroupChips.svelte';
   import AntonymChips from '$lib/components/AntonymChips.svelte';

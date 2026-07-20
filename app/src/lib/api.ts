@@ -175,3 +175,72 @@ export async function commitSentence(body: CommitSentenceRequest): Promise<Commi
   }
   return res.json();
 }
+
+export interface EditSentenceRequest {
+  hanzi: string;
+  pinyin: string;
+  english: string;
+  meaning: string;
+  words: string[];
+  word_refs: string[];
+  groups: (ProposedGroup | string)[];
+  antonyms: string[];
+}
+
+export interface EditSentenceResponse {
+  id: string;
+  updated: string;
+  connections_summary: Record<string, number>;
+  groups_added: string[];
+  groups_removed: string[];
+}
+
+export async function editSentence(
+  id: string,
+  body: EditSentenceRequest
+): Promise<EditSentenceResponse> {
+  const res = await fetch(`${API_BASE}/api/sentences/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`editSentence failed: ${res.status} ${detail}`);
+  }
+  return res.json();
+}
+
+export interface EditWordRequest {
+  english: string;
+  meaning: string;
+  groups: (ProposedGroup | string)[];
+  antonyms: string[];
+}
+
+export interface EditWordResponse {
+  id: string;
+  type: string;
+  updated: string;
+  connections_summary: Record<string, number>;
+  groups_added: string[];
+  groups_removed: string[];
+  antonyms_added: string[];
+  antonyms_removed: string[];
+}
+
+export async function editWord(
+  id: string,
+  body: EditWordRequest
+): Promise<EditWordResponse> {
+  const res = await fetch(`${API_BASE}/api/words/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`editWord failed: ${res.status} ${detail}`);
+  }
+  return res.json();
+}
