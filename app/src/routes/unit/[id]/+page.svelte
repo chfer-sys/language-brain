@@ -84,6 +84,18 @@
         { key: 'description' },
         { key: 'members', renderAs: 'csv' }
       );
+    } else if (u.type === 'compound') {
+      // ponytail: compound antonyms are raw word IDs (e.g. ["W1029"]) because
+      // the backend only resolves antonyms for type==word (units.py:198).
+      // Render as CSV until the backend adds compound antonym resolution.
+      known.push(
+        { key: 'hanzi' },
+        { key: 'pinyin' },
+        { key: 'english' },
+        { key: 'meaning' },
+        { key: 'groups', renderAs: 'chips', resolvedMap: u.groups_resolved },
+        { key: 'antonyms', renderAs: 'csv' }
+      );
     }
     return known
       .filter((k) => k.key in p)

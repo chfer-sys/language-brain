@@ -9,6 +9,7 @@
   export let enabled: Record<UnitType, boolean> = {
     sentence: true,
     word: true,
+    compound: true,
     group: true
   };
 
