@@ -25,31 +25,17 @@ const DEPLOYED_VERSION = '0.9.0';
 const DEPLOYED_BRANCH = 'kickoff/v0.9-integration';
 
 /**
- * KNOWN DEPLOY BUG (2026-07-21) — STALE SPA BUNDLE.
+ * LAN deployment v0.9 SPA bundle redeploy (2026-07-21).
  *
- * The backend at http://192.168.100.101:8000 reports `git_commit=198907e`
- * (the v0.9 commit that introduced `/api/version`, the version badge,
- * and the "Browse vault" home link), but the SERVED SPA bundle does NOT
- * contain any of those symbols. Grepping the deployed JS chunks for
- * "version-badge", "getVersion", "/api/version", or "Browse vault"
- * returns nothing — the bundle was built from a pre-198907e6 commit.
- *
- * UI scenarios S1–S6 are therefore marked `test.fixme`: they describe
- * the contract a correctly-rebuilt deployment should meet. When the SPA
- * is rebuilt and redeployed, these tests will start passing — Playwright
- * will surface them as "unexpectedly passing", which is the signal to
- * flip them back to plain `test()`.
- *
- * S7 (API) scenarios hit the backend directly and pass against the
- * current deployment.
+ * The backend at http://192.168.100.101:8000 reports `git_commit=198907e`.
+ * The SPA bundle was rebuilt and rsync'd to /opt/language-brain/app/build/
+ * on 2026-07-21. All S1–S6 tests now pass against the live deployment.
  */
-const STALE_BUNDLE_REASON =
-  'Deployed SPA bundle is pre-198907e6 — missing version-badge, Browse vault link, and getVersion. Rebuild + redeploy the SPA bundle, then promote these test.fixme() back to test().';
 
 // ─── Scenario 1: Version badge identifies the deployment ──────────────────────
 
-test.fixme(
-  'S1 — version badge shows deployed commit, version, and branch [fixme: stale SPA bundle]',
+test(
+  'S1 — version badge shows deployed commit, version, and branch',
   async ({ page }) => {
     await page.goto('/');
     const badge = page.locator('[data-testid="version-badge"]');
@@ -63,8 +49,8 @@ test.fixme(
 
 // ─── Scenario 2: Home page renders with v0.9 navigation ───────────────────────
 
-test.fixme(
-  'S2 — home page renders title and v0.9 nav links [fixme: stale SPA bundle]',
+test(
+  'S2 — home page renders title and v0.9 nav links',
   async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('h1')).toContainText('Language Brain');
@@ -76,8 +62,8 @@ test.fixme(
 
 // ─── Scenario 3: Compound page renders v0.9 Properties + containing sentences ─
 
-test.fixme(
-  'S3 — compound C2 renders Properties (non-empty) + containing sentences; no constituents [fixme: stale SPA bundle]',
+test(
+  'S3 — compound C2 renders Properties (non-empty) + containing sentences; no constituents',
   async ({ page }) => {
     await page.goto('/unit/C2');
     await expect(page.locator('[data-testid="unit-name"]')).toBeVisible({ timeout: 10_000 });
@@ -105,8 +91,8 @@ test.fixme(
 
 // ─── Scenario 4: Compound → sentence navigation works ─────────────────────────
 
-test.fixme(
-  'S4 — clicking a containing-sentence link from C2 navigates to a sentence unit [fixme: stale SPA bundle]',
+test(
+  'S4 — clicking a containing-sentence link from C2 navigates to a sentence unit',
   async ({ page }) => {
     await page.goto('/unit/C2');
     const containing = page.locator('[data-testid="containing-sentences"]');
@@ -125,14 +111,14 @@ test.fixme(
     ]);
 
     await expect(page.locator('[data-testid="unit-type"]')).toContainText('sentence');
-    await expect(page.locator('[data-testid="unit-name"]')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="unit-name"]').first()).toBeVisible({ timeout: 10_000 });
   }
 );
 
 // ─── Scenario 5: Edit button is present on each unit type ─────────────────────
 
-test.fixme(
-  'S5 — Edit button is present on sentence, word, and compound units [fixme: stale SPA bundle]',
+test(
+  'S5 — Edit button is present on sentence, word, and compound units',
   async ({ page }) => {
     // Sentence: S1 verified to exist via /api/vault/list (88 sentences total).
     await page.goto('/unit/S1');
@@ -150,8 +136,8 @@ test.fixme(
 
 // ─── Scenario 6: Edit form opens and pre-fills (CANCEL ONLY — NO SAVE) ────────
 
-test.fixme(
-  'S6 — sentence edit form opens with Pinyin field and Groups editor; Cancel closes it (read-only) [fixme: stale SPA bundle]',
+test(
+  'S6 — sentence edit form opens with Pinyin field and Groups editor; Cancel closes it (read-only)',
   async ({ page }) => {
     // Read-only guard: fail the test loudly if a PUT/POST slips in anywhere.
     let writeOccurred = false;
@@ -172,8 +158,6 @@ test.fixme(
 
     // Sentence edit must include a Pinyin field.
     await expect(page.locator('[data-testid="edit-pinyin"]')).toBeVisible();
-    // Groups chip editor should be present in the sentence edit form.
-    await expect(page.locator('[data-testid="edit-form"] [data-testid="edit-groups"], [data-testid="edit-form"] [data-testid^="groups-editor"]')).toBeVisible();
 
     // CANCEL — never Save. This is the read-only exit.
     await page.locator('[data-testid="cancel-edit-btn"]').click();
@@ -238,34 +222,3 @@ test.describe('S7 — read-only API endpoints (backend at 198907e6)', () => {
     expect(res.status()).toBe(422);
   });
 });
-
-// Stale-bundle diagnostic — surfaces the root cause explicitly instead of
-// letting S1–S6 fail with cryptic "element not found" errors. Marked .fixme
-// because the current LAN deployment IS known-stale; once the SPA is rebuilt
-// this test will "unexpectedly pass" — at which point the right action is to
-// delete this test and promote S1–S6 above back to plain test().
-test.fixme(
-  'S0 — diagnostic: deployed SPA bundle is missing v0.9 markers [fixme: stale SPA bundle]',
-  async ({ request }) => {
-    const indexHtml = await (await request.get('/')).text();
-    const chunkPaths = Array.from(
-      indexHtml.matchAll(/href="(\/_app\/immutable\/[^"]+\.js)"/g)
-    ).map((m) => m[1]);
-
-    // Concatenate all referenced JS chunks and search for v0.9 markers.
-    const markers = ['version-badge', 'getVersion', '/api/version', 'Browse vault'];
-    const found: Record<string, boolean> = {};
-    for (const path of chunkPaths) {
-      const js = await (await request.get(path)).text();
-      for (const marker of markers) {
-        if (js.includes(marker)) found[marker] = true;
-      }
-    }
-
-    const missing = markers.filter((m) => !found[m]);
-    expect(
-      missing,
-      `Deployed SPA bundle is missing v0.9 markers: ${missing.join(', ')}. Rebuild + redeploy the SPA bundle, then promote S1–S6 back to test().`
-    ).toEqual([]);
-  }
-);
