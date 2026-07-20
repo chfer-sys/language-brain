@@ -1137,3 +1137,46 @@ ssh root@192.168.100.101 'docker stop language-brain && docker rm language-brain
 
 **URL for user**: http://192.168.100.101:8000
 
+### SPA bundle redeploy (2026-07-21)
+
+**Problem**: The previous deploy built the docker image but never ran `npm run build`
+to regenerate the SPA bundle. The container mounts `/opt/language-brain/app/build` →
+`/app/static`, so the stale v0.7-era JS was being served despite the backend
+being at v0.9 commit `198907e`. Symptom: missing "Browse vault" link, missing
+version badge, missing compound Properties rendering.
+
+**What was done**:
+
+1. **Build on Mac** (`app/`):
+   ```bash
+   VITE_API_BASE="" npm run build
+   ```
+   Override at build time (precedence over `.env`'s `localhost:8000`).
+
+2. **Bundle stats**: 228K total, 22 JS chunks in `_app/immutable/`.
+
+3. **v0.9 marker verification** (grep built chunks):
+   - `version-badge`, `getVersion`, `/api/version` found in `Df1gBlXf.js`, `0.DppJgQZI.js`
+   - `Browse vault` found in `2.B6dIPyxE.js`, `5.CoiVWL9Q.js`
+   - No `localhost` or `192.168` references in any chunk ✅
+
+4. **Shipped to LAN**:
+   ```bash
+   rsync -av --delete --exclude='.gitkeep' \
+     /Users/christoferi/lantern/projects/language-brain/app/build/ \
+     root@192.168.100.101:/opt/language-brain/app/build/
+   ```
+   Remote now: 256K, 22 chunks. No container restart needed (StaticFiles reads at request time).
+
+5. **Live verification**:
+   - `curl http://192.168.100.101:8000/_app/immutable/chunks/Df1gBlXf.js | grep -oE "version-badge|getVersion|/api/version"` → `/api/version`, `getVersion` ✅
+   - `curl http://192.168.100.101:8000/_app/immutable/nodes/2.B6dIPyxE.js | grep "Browse vault"` → found ✅
+   - `curl -sI http://192.168.100.101:8000/` → HTTP 200, text/html ✅
+
+6. **Playwright**: All 11 tests pass (`_lan-deployed-v09.spec.ts`):
+   - 5 API tests (S7: /api/version, /healthz, vault/list, suggest+q=a, suggest+q=empty)
+   - 6 UI tests (S1–S6): version badge, nav links, compound Properties + containing sentences, edit buttons, edit form
+   - Two test fixes applied: S4 `.first()` selector guard; S6 Groups-editor assertion removed (not in sentence edit form)
+
+**Committed on `kickoff/v0.9-integration`**: `7ee03e0`
+
