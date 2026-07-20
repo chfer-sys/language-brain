@@ -1006,3 +1006,10 @@ Docker image, and switch to CPU-only torch.
 
 **Status: ready for local deploy**
 
+### Post-QA fixes (Wave 8-10)
+
+- Compound page now renders containing-sentences + constituent-characters sections (commit from Wave 8).
+- New `_smoke-v09.spec.ts` end-to-end spec exercises real backend (4 journeys).
+- Edit-UI bugs fixed: missing `editSentence`/`editWord` implementations, missing imports, onSave async-state short-circuit.
+- Dead code deduped: `_normalize_groups_input` now imported from `commit_sentence`, unused `ensure_group_unit` import removed.
+
