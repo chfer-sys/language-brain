@@ -117,6 +117,65 @@
     if (typeof v === 'string') return v;
     return JSON.stringify(v);
   }
+
+  function arrayToCsv(items: string[]): string {
+    return items.join(', ');
+  }
+
+  function csvToArray(csv: string): string[] {
+    return csv.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+  }
+
+  function startEdit() {
+    if (!unit) return;
+    const p = unit.properties;
+    editPinyin = String(p.pinyin ?? '');
+    editEnglish = String(p.english ?? '');
+    editMeaning = String(p.meaning ?? '');
+    editWordsCsv = arrayToCsv((p.words as string[]) ?? []);
+    editWordRefsCsv = arrayToCsv((p.word_refs as string[]) ?? []);
+    editGroups = ((p.groups as string[]) ?? []).slice();
+    editAntonyms = ((p.antonyms as string[]) ?? []).slice();
+    editMode = true;
+  }
+
+  function cancelEdit() {
+    editMode = false;
+  }
+
+  async function onSave() {
+    if (!unit) return;
+    saving = true;
+    try {
+      if (unit.type === 'sentence') {
+        await editSentence(unit.id, {
+          hanzi: String(unit.properties.hanzi),
+          pinyin: editPinyin.trim(),
+          english: editEnglish.trim(),
+          meaning: editMeaning.trim(),
+          words: csvToArray(editWordsCsv),
+          word_refs: csvToArray(editWordRefsCsv),
+          groups: editGroups,
+          antonyms: editAntonyms
+        });
+      } else if (unit.type === 'word' || unit.type === 'compound') {
+        await editWord(unit.id, {
+          english: editEnglish.trim(),
+          meaning: editMeaning.trim(),
+          groups: editGroups,
+          antonyms: editAntonyms
+        });
+      }
+      savedIndicator = true;
+      setTimeout(() => (savedIndicator = false), 2000);
+      await load(unit.id);
+      editMode = false;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      saving = false;
+    }
+  }
 </script>
 
 <svelte:head>
@@ -140,10 +199,76 @@
         {/if}
       </h1>
       <span class="type-badge" data-testid="unit-type">{unit.type}</span>
+      {#if !editMode && (unit.type === 'sentence' || unit.type === 'word' || unit.type === 'compound')}
+        <button type="button" class="edit-btn" on:click={startEdit} data-testid="edit-btn">Edit</button>
+      {/if}
     </header>
 
-    <section class="properties" data-testid="unit-properties">
-      <h2>Properties</h2>
+    {#if savedIndicator}
+      <p class="saved-indicator" role="status">Saved</p>
+    {/if}
+
+    {#if editMode}
+      <!-- Inline edit form — replaces Properties section while editing -->
+      <section class="edit-form" data-testid="edit-form">
+        {#if unit.type === 'sentence'}
+          <div class="hanzi-readonly" data-testid="edit-hanzi-display">{String(unit.properties.hanzi)}</div>
+          <label class="field">
+            <span class="label">Pinyin</span>
+            <input type="text" bind:value={editPinyin} data-testid="edit-pinyin" />
+          </label>
+          <label class="field">
+            <span class="label">English</span>
+            <input type="text" bind:value={editEnglish} data-testid="edit-english" />
+          </label>
+          <label class="field">
+            <span class="label">Meaning</span>
+            <input type="text" bind:value={editMeaning} data-testid="edit-meaning" />
+          </label>
+          <label class="field">
+            <span class="label">Words (comma-separated)</span>
+            <input type="text" bind:value={editWordsCsv} data-testid="edit-words" />
+          </label>
+          <label class="field">
+            <span class="label">Word refs (comma-separated)</span>
+            <input type="text" bind:value={editWordRefsCsv} data-testid="edit-word-refs" />
+          </label>
+          <label class="field">
+            <span class="label">Groups</span>
+            <GroupChips bind:value={editGroups} suggestions={existingGroups} testid="edit-groups" />
+          </label>
+          <label class="field">
+            <span class="label">Antonyms</span>
+            <AntonymChips bind:value={editAntonyms} testid="edit-antonyms" />
+          </label>
+        {:else if unit.type === 'word' || unit.type === 'compound'}
+          <label class="field">
+            <span class="label">English</span>
+            <input type="text" bind:value={editEnglish} data-testid="edit-english" />
+          </label>
+          <label class="field">
+            <span class="label">Meaning</span>
+            <input type="text" bind:value={editMeaning} data-testid="edit-meaning" />
+          </label>
+          <label class="field">
+            <span class="label">Groups</span>
+            <GroupChips bind:value={editGroups} suggestions={existingGroups} testid="edit-groups" />
+          </label>
+          <label class="field">
+            <span class="label">Antonyms</span>
+            <AntonymChips bind:value={editAntonyms} testid="edit-antonyms" />
+          </label>
+        {/if}
+        <div class="actions">
+          <button type="button" class="primary" on:click={onSave} disabled={saving} data-testid="save-edit-btn">
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+          <button type="button" on:click={cancelEdit} data-testid="cancel-edit-btn">Cancel</button>
+        </div>
+      </section>
+    {:else}
+      <section class="properties" data-testid="unit-properties">
+        <h2>Properties</h2>
       <dl>
         {#each topProps(unit) as { key, value, renderAs, resolvedMap } (key)}
           <dt>{key}</dt>
@@ -165,6 +290,7 @@
         {/each}
       </dl>
     </section>
+    {/if}
 
     <section class="connections" data-testid="unit-connections">
       <h2>Connections</h2>
@@ -409,5 +535,109 @@
   .containing a:focus-visible {
     color: var(--lb-accent);
     text-decoration: underline;
+  }
+
+  .edit-btn {
+    font-size: 13px;
+    padding: 4px 12px;
+    border: 1px solid var(--lb-border);
+    border-radius: 6px;
+    background: var(--lb-bg);
+    color: var(--lb-fg);
+    cursor: pointer;
+    font-family: inherit;
+    margin-left: auto;
+  }
+
+  .edit-btn:hover,
+  .edit-btn:focus-visible {
+    background: var(--lb-accent);
+    color: white;
+    border-color: var(--lb-accent);
+  }
+
+  .saved-indicator {
+    color: #16a34a;
+    font-size: 14px;
+    margin: -8px 0 12px;
+    font-weight: 500;
+  }
+
+  .hanzi-readonly {
+    font-size: 20px;
+    padding: 8px 12px;
+    background: #f8fafc;
+    border: 1px solid var(--lb-border);
+    border-radius: 8px;
+    color: var(--lb-fg);
+    margin-bottom: 4px;
+  }
+
+  .edit-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 20px;
+    border: 1px solid var(--lb-border);
+    border-radius: 12px;
+    background: var(--lb-bg);
+    margin-bottom: 24px;
+  }
+
+  .edit-form .field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .edit-form .label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--lb-fg);
+  }
+
+  .edit-form input {
+    font: inherit;
+    font-size: 15px;
+    padding: 10px 12px;
+    border: 1px solid var(--lb-border);
+    border-radius: 8px;
+    background: var(--lb-bg);
+    color: var(--lb-fg);
+    outline: none;
+  }
+
+  .edit-form input:focus {
+    border-color: var(--lb-accent);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+  }
+
+  .edit-form .actions {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-top: 4px;
+  }
+
+  .edit-form button {
+    font: inherit;
+    font-size: 14px;
+    padding: 9px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--lb-border);
+    background: var(--lb-bg);
+    color: var(--lb-fg);
+    cursor: pointer;
+  }
+
+  .edit-form button.primary {
+    background: var(--lb-accent);
+    color: white;
+    border-color: var(--lb-accent);
+  }
+
+  .edit-form button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>
