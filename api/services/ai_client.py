@@ -217,6 +217,8 @@ class HttpAIClient:
             "response_format": {"type": "json_object"},
             # ponytail: caps runaway reasoning tokens (30-60s → ~10-20s); 4000 leaves headroom for DeepSeek V4 Flash reasoning + ~300-token JSON — tune down if truncations appear (they degrade to the local fallback).
             "max_tokens": 4000,
+            # ponytail: "low" variant cuts DeepSeek reasoning 22-35s → ~9s (verified 2026-07-24); variants: low/medium/high/max. Tune up if label quality drops.
+            "reasoning_effort": "low",
         }
         headers = {
             "Authorization": f"Bearer {api_key}",
