@@ -41,6 +41,11 @@ class ProposeSentencesResponse(BaseModel):
 
     Mirrors the AI client's ``ProposedLabels`` dataclass. All seven
     fields are populated per SPEC §6 AC6.
+
+    ``degraded`` is True when the response was served from a local
+    fallback (dictionary lookup) because the AI provider was
+    unavailable. The frontend may use this to surface a review
+    banner; at runtime it is ignored.
     """
 
     pinyin: str
@@ -50,6 +55,7 @@ class ProposeSentencesResponse(BaseModel):
     word_refs: list[str]
     groups: list[ProposedGroupOut]
     antonyms: list[str]
+    degraded: bool = False
 
 
 # ---------------------------------------------------------------------------
