@@ -215,8 +215,8 @@ class HttpAIClient:
             ],
             "temperature": 0.2,
             "response_format": {"type": "json_object"},
-            # ponytail: caps runaway reasoning tokens (30-60s → ~10-20s); 2000 leaves headroom for the ~300-token JSON — tune down if truncations appear (they degrade to the local fallback).
-            "max_tokens": 2000,
+            # ponytail: caps runaway reasoning tokens (30-60s → ~10-20s); 4000 leaves headroom for DeepSeek V4 Flash reasoning + ~300-token JSON — tune down if truncations appear (they degrade to the local fallback).
+            "max_tokens": 4000,
         }
         headers = {
             "Authorization": f"Bearer {api_key}",
