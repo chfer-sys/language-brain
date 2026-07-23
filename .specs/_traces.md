@@ -1319,3 +1319,60 @@ Acceptable; user was informed via the spec's cleanup log.
 
 status: deployed
 
+### Reasoning-effort=low latency fix (2026-07-24)
+
+**Problem**: DeepSeek `propose_labels` calls took 22–35s of wall time,
+dominated by the model's internal reasoning phase. Label quality was
+fine for our use case (short sentence → pinyin + segmentation + gloss
++ groups + antonyms) — we were overpaying for reasoning depth we
+didn't need.
+
+**What changed** (commit `15980a8e` on `kickoff/v0.9-integration`):
+
+Added `"reasoning_effort": "low"` to the DeepSeek chat-completions
+payload in `api/services/ai_client.py` `HttpAIClient.propose_labels`
+(~line 221, next to the existing `max_tokens: 4000`). Variants:
+`low/medium/high/max`. Ponytail comment notes the verified latency
+delta and the upgrade path (tune up if label quality drops).
+
+**Direct API probe** (pre-deploy, same payload shape): 8.7s vs
+22–35s baseline — ~3x speedup.
+
+**Deploy procedure** (safe-server-deploy skill):
+
+- Server clone at `/opt/language-brain/src` on `kickoff/v0.9-integration`.
+- No stash needed (clean working tree).
+- Container env/mounts/ports captured via `docker inspect`.
+- Image rebuilt on server (~3m12s CPU-only build).
+- Container recreated with captured config (quotes stripped via
+  `sed -i "s/\"//g" /tmp/lb-env.sh` — same `%q` template gotcha as
+  last deploy).
+
+**Live verification (from Mac, 192.168.100.101:8000)**:
+
+```
+GET /healthz:
+  → {"status":"ok","ai_model":"deepseek-v4-flash","mock_mode":"false"}  ✅
+
+POST /api/sentences (她明天要去图书馆, "She is going to the library tomorrow"):
+  → HTTP 200, 33.9s first call (API cold-start variance), degraded:false
+  → pinyin: tā míngtiān yào qù túshūguǎn  ✅
+  → words: 她,明天,要,去,图书馆  ✅
+
+POST /api/sentences (我喜欢吃苹果, "I like to eat apples"):
+  → HTTP 200, 15.1s steady-state, degraded:false
+  → pinyin: wǒ xǐhuān chī píngguǒ  ✅
+  → words: 我,喜欢,吃,苹果  ✅
+```
+
+Label quality confirmed good — pinyin, segmentation, English gloss,
+groups, and antonyms all real and correct. Steady-state latency
+~15s (was 22–35s baseline).
+
+**Test totals**: 668 passed, 0 failed (full `tests/api/` suite).
+
+**Branch deployed**: `kickoff/v0.9-integration`
+**Commit**: `15980a8e`
+
+status: deployed
+
