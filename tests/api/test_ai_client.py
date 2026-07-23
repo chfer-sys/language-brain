@@ -256,7 +256,7 @@ def test_parse_labels_json_missing_key_raises() -> None:
             # no "groups"
         }
     )
-    with pytest.raises(ValueError, match="missing required keys"):
+    with pytest.raises(RuntimeError, match="missing required keys"):
         _parse_labels_json(bad)
 
 
@@ -272,17 +272,17 @@ def test_parse_labels_json_wrong_type_raises() -> None:
             "antonyms": [],
         }
     )
-    with pytest.raises(ValueError, match="words"):
+    with pytest.raises(RuntimeError, match="words"):
         _parse_labels_json(bad)
 
 
 def test_parse_labels_json_invalid_json_raises() -> None:
-    with pytest.raises(ValueError, match="not valid JSON"):
+    with pytest.raises(RuntimeError, match="not valid JSON"):
         _parse_labels_json("not json at all")
 
 
 def test_parse_labels_json_not_an_object_raises() -> None:
-    with pytest.raises(ValueError, match="object"):
+    with pytest.raises(RuntimeError, match="object"):
         _parse_labels_json("[1, 2, 3]")
 
 
@@ -312,7 +312,7 @@ def test_parse_labels_json_with_unterminated_think_block_raises() -> None:
     JSON parser surfaces a parse error. Better to fail loud than
     silently drop the response."""
     raw = "<think>still thinking...\n\npartial text no json"
-    with pytest.raises(ValueError, match="not valid JSON"):
+    with pytest.raises(RuntimeError, match="not valid JSON"):
         _parse_labels_json(raw)
 
 

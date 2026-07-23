@@ -328,11 +328,11 @@ def _parse_labels_json(content: str) -> ProposedLabels:
        ``word`` key for words/word_refs/antonyms, the ``id``+``display_name``
        for groups).
 
-    Raises :class:`ValueError` if the content is not parseable, or
+    Raises :class:`RuntimeError` if the content is not parseable, or
     if any required key is missing after normalization.
     """
     if not isinstance(content, str):
-        raise ValueError("AI content must be a string")
+        raise RuntimeError("AI content must be a string")
 
     text = content.strip()
 
@@ -376,21 +376,21 @@ def _parse_labels_json(content: str) -> ProposedLabels:
                         end = i + 1
                         break
             if end == -1:
-                raise ValueError("AI content is not valid JSON: unbalanced braces")
+                raise RuntimeError("AI content is not valid JSON: unbalanced braces")
             text = text[start:end]
 
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"AI content is not valid JSON: {exc.msg}") from exc
+        raise RuntimeError(f"AI content is not valid JSON: {exc.msg}") from exc
 
     if not isinstance(data, dict):
-        raise ValueError("AI content JSON must be an object")
+        raise RuntimeError("AI content JSON must be an object")
 
     required = ("pinyin", "english", "meaning", "words", "word_refs", "groups", "antonyms")
     missing = [k for k in required if k not in data]
     if missing:
-        raise ValueError(f"AI response missing required keys: {missing}")
+        raise RuntimeError(f"AI response missing required keys: {missing}")
 
     # Normalize each list field. Each entry may be either a bare
     # string (the schema's expected shape) or an object (the rich
@@ -414,7 +414,7 @@ def _parse_labels_json(content: str) -> ProposedLabels:
     def _coerce_string_list(field_name: str, *preferred_keys: str) -> list[str]:
         raw = data[field_name]
         if not isinstance(raw, list):
-            raise ValueError(f"'{field_name}' must be a list")
+            raise RuntimeError(f"'{field_name}' must be a list")
         out: list[str] = []
         for entry in raw:
             s = _coerce_string(entry, *preferred_keys)
@@ -428,7 +428,7 @@ def _parse_labels_json(content: str) -> ProposedLabels:
 
     groups_raw = data["groups"]
     if not isinstance(groups_raw, list):
-        raise ValueError("'groups' must be a list")
+        raise RuntimeError("'groups' must be a list")
 
     def _slugify(s: str) -> str:
         """Convert a free-form name into a slug id.
