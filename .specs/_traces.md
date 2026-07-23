@@ -1083,7 +1083,7 @@ docker run -d \
   -e LANGUAGE_BRAIN_VAULT=/app/vault \
   -e HF_ENDPOINT=https://hf-mirror.com \
   -e HF_HOME=/root/.cache/huggingface \
-  -e LANGUAGE_BRAIN_AI_KEY=sk-cp-JRVfuT5Rd0z_A1SJMBJh5iqf4tiOmvjg3l2ejn2xTrryUYv69mBBM8siOhh6zH6HNOMvr2GbFAIhPkKV1kCzlK_P309yXe4DeGd4ADiSzt9dFbF1k_OcmLk \
+  -e LANGUAGE_BRAIN_AI_KEY=***REDACTED*** \
   -e LANGUAGE_BRAIN_AI_ENDPOINT=https://api.minimax.io/v1 \
   -e LANGUAGE_BRAIN_AI_MODEL=MiniMax-M2.1 \
   -e LANGUAGE_BRAIN_GIT_COMMIT=198907e \
