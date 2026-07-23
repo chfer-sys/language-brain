@@ -44,6 +44,15 @@ class Embedder(Protocol):
         also normalizes.
         """
         ...
+    def embed_batch(self, texts: list[str]) -> np.ndarray:
+        """Embed a list of texts. Returns shape ``(len(texts), dim)``.
+
+        Default contract: each row is L2-normalized and matches the
+        output of :meth:`embed` for the same text. Implementations
+        may batch internally (single forward pass for the real
+        model) or loop (hashing embedder).
+        """
+        ...
     @property
     def dim(self) -> int:
         ...
@@ -95,6 +104,15 @@ class HashingEmbedder:
         if norm > 0:
             out /= norm
         return out
+
+    def embed_batch(self, texts: list[str]) -> np.ndarray:
+        """Embed a list of texts. ponytail: simple loop — hashing is
+        cheap per-item; no vectorisation gain worth the complexity."""
+        if not isinstance(texts, list) or not all(isinstance(t, str) for t in texts):
+            raise ValueError("texts must be a list of strings")
+        if not texts:
+            return np.empty((0, self.dim), dtype=np.float32)
+        return np.stack([self.embed(t) for t in texts])
 
 
 # ---------------------------------------------------------------------------

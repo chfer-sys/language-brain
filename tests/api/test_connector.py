@@ -2344,3 +2344,85 @@ def test_compute_word_opposite_edges_empty_antonyms_contributes_nothing() -> (
     assert pairs == 0
     assert sync == set()
     assert edges == {}
+
+
+# ---------------------------------------------------------------------------
+# embed_batch usage — ponytail: batched forward pass, not per-item loop
+# ---------------------------------------------------------------------------
+
+
+class _SpyEmbedder:
+    """Embedder that counts embed vs embed_batch calls.
+
+    Wraps :class:`HashingEmbedder` so the returned vectors are
+    deterministic and match the real contract; the spy just records
+    call counts so tests can assert which path was taken.
+    """
+
+    def __init__(self) -> None:
+        self._inner = HashingEmbedder()
+        self.embed_calls = 0
+        self.embed_batch_calls = 0
+
+    @property
+    def dim(self) -> int:
+        return self._inner.dim
+
+    def embed(self, text: str) -> np.ndarray:
+        self.embed_calls += 1
+        return self._inner.embed(text)
+
+    def embed_batch(self, texts: list[str]) -> np.ndarray:
+        self.embed_batch_calls += 1
+        return self._inner.embed_batch(texts)
+
+
+def test_compute_sentence_semantic_edges_uses_embed_batch() -> None:
+    """The semantic pass calls ``embed_batch`` once, not ``embed``
+    per sentence.
+
+    Pins the batching optimization: 3 sentences with meanings must
+    result in exactly 1 ``embed_batch`` call and 0 ``embed`` calls.
+    """
+    sentences = [
+        _make_sentence(unit_id="A", hanzi="ab", meaning="alpha"),
+        _make_sentence(unit_id="B", hanzi="bc", meaning="beta"),
+        _make_sentence(unit_id="C", hanzi="cd", meaning="gamma"),
+    ]
+    spy = _SpyEmbedder()
+
+    _compute_sentence_semantic_edges(sentences, embedder=spy)
+
+    assert spy.embed_batch_calls == 1
+    assert spy.embed_calls == 0
+
+
+def test_compute_sentence_semantic_edges_falls_back_without_embed_batch() -> None:
+    """An embedder lacking ``embed_batch`` still works via per-item
+    ``embed`` calls (ponytail: hasattr guard, not a refactor)."""
+    sentences = [
+        _make_sentence(unit_id="A", hanzi="ab", meaning="alpha"),
+        _make_sentence(unit_id="B", hanzi="bc", meaning="beta"),
+    ]
+
+    class _LegacyEmbedder:
+        def __init__(self) -> None:
+            self._inner = HashingEmbedder()
+            self.embed_calls = 0
+
+        @property
+        def dim(self) -> int:
+            return self._inner.dim
+
+        def embed(self, text: str) -> np.ndarray:
+            self.embed_calls += 1
+            return self._inner.embed(text)
+
+    legacy = _LegacyEmbedder()
+    edges, pairs, skipped = _compute_sentence_semantic_edges(
+        sentences, embedder=legacy
+    )
+
+    assert legacy.embed_calls == 2
+    assert skipped == 0
+    assert pairs == 0  # orthogonal meanings under hashing embedder

@@ -8,6 +8,7 @@ scaffolding.
 
 from __future__ import annotations
 
+import logging
 import os
 
 # MUST come first: loads .env before api.config.settings is
@@ -21,6 +22,9 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.config import configure_root_logger, settings
+
+
+_logger = logging.getLogger(__name__)
 
 
 class SPAStaticFiles(StaticFiles):
@@ -83,6 +87,22 @@ app = FastAPI(
         "See .specs/language-brain.md for the full design."
     ),
 )
+
+
+# ponytail: warm the embedder at startup so the first user commit
+# doesn't pay the 1-3s model load. Guarded by env flag so TestClient
+# invocations in pytest can skip it (tests don't need the real model
+# loaded; HashingEmbedder is used via monkeypatch).
+@app.on_event("startup")
+def _warm_embedder() -> None:
+    if os.environ.get("LANGUAGE_BRAIN_SKIP_EMBEDDER_WARMUP"):
+        return
+    try:
+        from api.services.embedder import get_embedder
+
+        get_embedder().embed("warmup")
+    except Exception as exc:  # noqa: BLE001 — never crash startup
+        _logger.warning("embedder warmup failed: %s", exc)
 
 # CORS for the SvelteKit dev server (B6 — UI brick). The frontend
 # runs on http://localhost:5173 (vite default) during development;

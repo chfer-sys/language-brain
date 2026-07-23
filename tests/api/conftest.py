@@ -6,6 +6,7 @@ into every test's tmp vault so that commit-path tests can use
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,11 @@ from fastapi.testclient import TestClient
 from api.main import app
 from api import config as config_module
 from scripts.build_dictionary import _import_source
+
+
+# ponytail: skip the embedder warmup in tests — TestClient fires
+# startup events, and we don't want the real model loaded in CI.
+os.environ.setdefault("LANGUAGE_BRAIN_SKIP_EMBEDDER_WARMUP", "1")
 
 
 # ---------------------------------------------------------------------------

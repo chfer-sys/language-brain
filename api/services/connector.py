@@ -432,8 +432,13 @@ def _compute_sentence_semantic_edges(
     # Pre-embed once per sentence. Each sentence contributes
     # (id, embedding); we skip entries without a usable meaning.
     # The list is sorted by id so pair iteration is deterministic.
+    #
+    # ponytail: batched single forward pass via embed_batch; remaining
+    # cost is O(N) file scan per commit — incremental edge compute is
+    # the upgrade path if vault grows past ~500 sentences.
     indexed: list[tuple[str, np.ndarray]] = []
     skipped = 0
+    pending: list[tuple[int, str, str]] = []  # (insert_idx, unit_id, meaning)
     for unit in sentences:
         unit_id = unit.get("id")
         if not isinstance(unit_id, str) or not unit_id:
@@ -443,7 +448,23 @@ def _compute_sentence_semantic_edges(
         if meaning is None:
             skipped += 1
             continue
-        indexed.append((unit_id, embedder.embed(meaning)))
+        pending.append((len(indexed), unit_id, meaning))
+        indexed.append((unit_id, np.zeros(0, dtype=np.float32)))  # placeholder
+
+    if pending:
+        meanings = [m for _, _, m in pending]
+        vecs: np.ndarray | None = None
+        # ponytail: hasattr guard — custom embedders lacking embed_batch
+        # fall back to the per-item loop without refactoring the call site.
+        if hasattr(embedder, "embed_batch"):
+            try:
+                vecs = embedder.embed_batch(meanings)
+            except AttributeError:
+                vecs = None
+        if vecs is None:
+            vecs = np.stack([embedder.embed(m) for m in meanings])
+        for (idx, unit_id, _meaning), vec in zip(pending, vecs):
+            indexed[idx] = (unit_id, np.asarray(vec, dtype=np.float32))
 
     indexed.sort(key=lambda pair: pair[0])
 
