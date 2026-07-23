@@ -1246,3 +1246,76 @@ POST /api/sentences (AI failure path):
 
 status: deployed
 
+### Commit-path latency fix — batch embed + startup warmup (2026-07-24)
+
+**Problem**: `POST /api/sentences/commit` took ~2–4s because
+`_compute_sentence_semantic_edges` (connector.py:432–448) re-embedded
+EVERY sentence in the vault with per-sentence `embedder.embed(meaning)`
+calls. 88 sentences × ~15–30ms CPU each = 1.3–2.6s, scaling linearly
+with vault growth.
+
+**What changed** (commit `8e436c81` on `kickoff/v0.9-integration`):
+
+1. **Batched embeddings** — `_compute_sentence_semantic_edges` now
+   collects all sentence meanings, calls `embedder.embed_batch(meanings)`
+   ONCE (single forward pass for the real model), and zips results back
+   to sentence ids. `hasattr` guard falls back to per-item `embed()`
+   loop for custom embedders lacking `embed_batch`.
+2. **Embedder Protocol + HashingEmbedder** — `embed_batch` added to the
+   `Embedder` Protocol and implemented on `HashingEmbedder` (simple loop
+   over texts; hashing is cheap per-item, no vectorisation gain worth
+   the complexity).
+3. **Startup warmup** — `api/main.py` gains a `@app.on_event("startup")`
+   handler that calls `get_embedder().embed("warmup")` so the first user
+   commit doesn't pay the 1–3s model load. Guarded by
+   `LANGUAGE_BRAIN_SKIP_EMBEDDER_WARMUP` env var (set in test conftest
+   so TestClient-based tests don't load the real model).
+4. **New tests** — `_SpyEmbedder` wraps `HashingEmbedder`, asserts
+   exactly 1 `embed_batch` call and 0 `embed` calls for 3 sentences.
+   Plus a fallback test with a legacy embedder lacking `embed_batch`.
+5. **Playwright timing spec** — `app/tests/add-flow-timing.spec.ts`
+   measures propose + commit latency against a live deploy (BASE_URL-
+   gated, 180s timeout, asserts propose < 60s and commit < 10s).
+
+**Deploy procedure** (safe-server-deploy skill):
+
+- Server clone at `/opt/language-brain/src` on `kickoff/v0.9-integration`.
+- Pre-deploy stash (no local changes to save).
+- Container env/mounts/ports captured via `docker inspect`.
+- Image rebuilt on server (~3m36s CPU-only build).
+- Container recreated with captured config.
+
+**Deploy gotcha**: `docker inspect --format '{{range .Config.Env}}{{printf "-e %q " .}}{{end}}'`
+emits literal quotes around env var values (e.g. `-e "KEY=value"`).
+First container recreate had `mock_mode: true` because the quoted
+`LANGUAGE_BRAIN_AI_KEY` wasn't parsed correctly by the shell. Fixed by
+stripping quotes with `sed "s/\"//g"`. The safe-server-deploy skill
+doc should note this.
+
+**Verification (Playwright live, BASE_URL=http://192.168.100.101:8000)**:
+
+```
+app/tests/add-flow-timing.spec.ts:
+  propose: 34.6s  (DeepSeek reasoning, budget 60s)  ✅ PASS
+  commit:  2.9s   (budget 10s, was 2-4s+ before)    ✅ PASS
+
+GET /healthz (from Mac):
+  → {"status":"ok","vault":"/app/vault","ai_model":"deepseek-v4-flash",
+     "mock_mode":"false"}  ✅
+
+openapi.json:
+  PUT /api/sentences/{sentence_id}  ✅ (v0.9 endpoint intact)
+  PUT /api/words/{word_id}          ✅ (v0.9 endpoint intact)
+```
+
+**Side effect**: test sentence S109 (她昨天买了很多水果) remains in
+the live vault — no `DELETE /api/sentences/{id}` endpoint exists.
+Acceptable; user was informed via the spec's cleanup log.
+
+**Test totals**: 668 passed, 0 failed (full `tests/api/` suite).
+
+**Branch deployed**: `kickoff/v0.9-integration`
+**Commit**: `8e436c81`
+
+status: deployed
+
