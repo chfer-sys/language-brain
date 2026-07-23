@@ -166,20 +166,33 @@ def test_route_uses_ai_client_dependency(
 
 
 # ---------------------------------------------------------------------------
-# AI provider error → 502
+# AI provider error → degraded 200 (local fallback)
 # ---------------------------------------------------------------------------
 
 
-def test_propose_returns_502_when_ai_raises_runtime(
+def test_propose_returns_degraded_200_when_ai_raises_runtime(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """When the AI provider fails, the route serves a local fallback.
+
+    The response is 200, ``degraded`` is true, ``pinyin`` and ``words``
+    are non-empty, and ``english`` equals the user's note.
+    """
+
     class _Broken(AIClient):
         def propose_labels(self, hanzi: str, note: str = "") -> ProposedLabels:
             raise RuntimeError("upstream exploded")
 
     monkeypatch.setattr(add_sentence_route, "get_ai_client", lambda: _Broken())
-    resp = client.post("/api/sentences", json={"hanzi": "你好"})
-    assert resp.status_code == 502
+    resp = client.post(
+        "/api/sentences", json={"hanzi": "你好", "note": "hello greeting"}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["degraded"] is True
+    assert body["pinyin"], "pinyin must be non-empty"
+    assert body["words"], "words must be non-empty"
+    assert body["english"] == "hello greeting"
     # The error message must not leak the underlying text.
     assert "upstream exploded" not in resp.text
 

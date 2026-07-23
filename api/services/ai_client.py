@@ -29,6 +29,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Protocol
 
 from api.config import get_settings
@@ -181,6 +182,8 @@ class HttpAIClient:
         self._endpoint = endpoint or s.ai_endpoint
         self._model = model or s.ai_model
 
+    # ponytail: 256-entry cache; personal scale, repeat sentences are instant. Ceiling: restart clears. Cached object must not be mutated by callers.
+    @lru_cache(maxsize=256)
     def propose_labels(self, hanzi: str, note: str = "") -> ProposedLabels:
         if not isinstance(hanzi, str) or not hanzi.strip():
             raise ValueError("hanzi must be a non-empty string")
@@ -212,6 +215,8 @@ class HttpAIClient:
             ],
             "temperature": 0.2,
             "response_format": {"type": "json_object"},
+            # ponytail: caps runaway reasoning tokens (30-60s → ~10-20s); 2000 leaves headroom for the ~300-token JSON — tune down if truncations appear (they degrade to the local fallback).
+            "max_tokens": 2000,
         }
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -225,8 +230,9 @@ class HttpAIClient:
         import requests  # type: ignore[import-untyped]
 
         try:
+            # ponytail: 120s ceiling — reasoning models (deepseek-v4-flash) run 30-60s; the prior 30s timed out every call.
             response = requests.post(
-                url, headers=headers, json=payload, timeout=30
+                url, headers=headers, json=payload, timeout=120
             )
             response.raise_for_status()
         except requests.RequestException as exc:
