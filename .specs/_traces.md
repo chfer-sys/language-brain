@@ -1180,3 +1180,69 @@ version badge, missing compound Properties rendering.
 
 **Committed on `kickoff/v0.9-integration`**: `7ee03e0`
 
+### AI propose latency + fallback hotfix (2026-07-24)
+
+**Problem**: AI sentence labeling (`POST /api/sentences`) was taking 30–60s per call
+because DeepSeek V4 Flash (a reasoning model) generated unbounded reasoning tokens.
+Additionally, any AI provider failure returned HTTP 502 with no useful data — the
+frontend had nothing to show the user.
+
+**What changed** (4 commits on `kickoff/v0.9-integration`):
+
+1. `8343f19` — Cherry-pick of `fix/ai-propose-latency-fallback` onto v0.9:
+   - `api/services/ai_client.py`: added `max_tokens: 4000` to the AI payload
+     (caps runaway reasoning; 2000 was tried first but DeepSeek V4 Flash needs
+     more headroom for reasoning + the ~300-token JSON). Added `@lru_cache(maxsize=256)`
+     to `HttpAIClient.propose_labels` — personal scale, repeat sentences are instant.
+   - `api/routes/add_sentence.py`: replaced the 502 with a local fallback using
+     `Dictionary.segment(hanzi)` + `pypinyin.lazy_pinyin` last-resort. Returns
+     HTTP 200 with `degraded: true` and a meaning placeholder.
+   - `api/schemas.py`: added `degraded: bool = False` field to `ProposeSentencesResponse`.
+   - `tests/api/test_add_sentence_route.py`: rewrote the 502 test to assert 200 +
+     `degraded:true` + non-empty pinyin/words + `english == note`.
+2. `9dd4d6f` — Redacted a leaked AI key from `.specs/_traces.md` (pre-existing
+   issue; the `check_no_secrets.sh` pre-commit hook was failing the test suite).
+3. `e86497e` — Changed `_parse_labels_json` to raise `RuntimeError` (not `ValueError`)
+   on JSON parse errors so AI-provider garbage triggers the fallback instead of
+   surfacing a 422. Updated 5 tests in `test_ai_client.py` accordingly.
+4. `ef578c1` — Bumped `max_tokens` from 2000 → 4000. DeepSeek V4 Flash was
+   consistently truncating at 2000; 4000 gives enough room for reasoning + JSON.
+
+**Deploy procedure** (safe-server-deploy skill):
+
+- Server clone at `/opt/language-brain/src` switched from `main` to
+  `kickoff/v0.9-integration` (the live server runs v0.9 code, not main).
+- Pre-deploy stash created (`pre-deploy-stash`) to preserve the server's
+  untracked `.specs/sessions/` file.
+- Container env/mounts/ports captured via `docker inspect` before stop.
+- Image rebuilt on server (~3m CPU-only build).
+- Container recreated with captured config.
+
+**Verification (from Mac)**:
+
+```
+GET /healthz
+  → {"status":"ok","vault":"/app/vault","ai_model":"deepseek-v4-flash",
+     "mock_mode":"false"}  ✅
+
+openapi.json:
+  PUT /api/sentences/{sentence_id}  ✅ (v0.9 endpoint intact)
+  PUT /api/words/{word_id}          ✅ (v0.9 endpoint intact)
+
+POST /api/sentences (uncached, 她昨天买了很多水果):
+  → HTTP 200, 21.96s  ✅  (was 30-60s before max_tokens cap)
+
+POST /api/sentences (cached, same sentence repeated):
+  → HTTP 200, 0.18s   ✅  (122x speedup from lru_cache)
+
+POST /api/sentences (AI failure path):
+  → HTTP 200, degraded:true, local Dictionary.segment fallback  ✅
+```
+
+**Test totals**: 666 passed, 0 failed (full `tests/api/` suite).
+
+**Branch deployed**: `kickoff/v0.9-integration`
+**Final commit deployed**: `ef578c1`
+
+status: deployed
+
