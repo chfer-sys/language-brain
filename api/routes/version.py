@@ -24,7 +24,7 @@ def _git_cmd(cmd: list[str], fallback: str = "unknown") -> str:
 # ponytail: computed once at module import (process lifetime cache).
 # Fallback chain: git → env var → "unknown".
 _VERSION: dict[str, str] = {
-    "version": os.environ.get("LANGUAGE_BRAIN_VERSION") or "0.9.0",
+    "version": os.environ.get("LANGUAGE_BRAIN_VERSION") or "0.10.0",
     "git_commit": _git_cmd(["git", "rev-parse", "--short", "HEAD"]),
     "git_branch": _git_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"]),
 }

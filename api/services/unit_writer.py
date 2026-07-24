@@ -20,9 +20,12 @@ See SPEC §2 (unit model) and §6 AC1 (round-trip property).
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Final
+
+log = logging.getLogger(__name__)
 
 VALID_UNIT_TYPES: Final[frozenset[str]] = frozenset({"sentence", "word", "compound", "group"})
 
@@ -136,6 +139,36 @@ def write_unit(vault_root: str, unit: dict) -> Path:
         fh.write(payload)
         fh.write("\n")
     os.replace(tmp_path, path)
+
+    # Dual-write: upsert into SQLite so subsequent reads via SQLite
+    # see the new data. Wrapped in try/except so a SQLite failure
+    # doesn't corrupt the JSON write (JSON remains source of truth).
+    # ponytail: ceiling — opens a new connection per write; upgrade
+    # path is connection pooling if write throughput becomes a bottleneck.
+    try:
+        from api.services.db import get_connection, init_schema
+
+        conn = get_connection(vault_root)
+        try:
+            init_schema(conn)
+            # Disable FK constraints for the dual-write. The live vault may
+            # have dangling references (e.g. a connection pointing at a unit
+            # that hasn't been written yet). The migration script does the
+            # same. ponytail: bulk-write relaxation is the standard pattern;
+            # the FK is back ON at connection level for reads.
+            conn.execute("PRAGMA foreign_keys = OFF")
+            _upsert_unit(conn, unit)
+            # If the unit has connections, also upsert edges.
+            connections = unit.get("connections") or []
+            if connections:
+                _upsert_edges(conn, unit_id, connections)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        # SQLite write failed; log but don't raise. JSON is source of truth.
+        log.warning("dual-write to SQLite failed for unit %r: %s", unit_id, exc)
+
     return path
 
 
@@ -244,3 +277,79 @@ def list_sentence_units_sorted(vault_root: str) -> list[dict]:
 def list_all_groups_from_disk(vault_root: str) -> list[dict]:
     """Return all group units under the vault (sorted by id)."""
     return list_units_by_type(vault_root, "group")
+
+
+# ---------------------------------------------------------------------------
+# Dual-write helpers (v0.10) — upsert into SQLite after JSON write
+# ---------------------------------------------------------------------------
+
+
+def _upsert_unit(conn, unit: dict) -> None:
+    """Upsert a unit into the SQLite ``unit`` table.
+
+    Mirrors the migration script's ``_insert_unit`` but uses INSERT OR REPLACE
+    so re-writes update the row. The ``sort_key`` is set to 0 (matching the
+    migration script's default). The ``name`` column is populated from
+    ``properties.hanzi`` or ``properties.display_name`` (falling back to the
+    unit's top-level ``name`` field if present).
+    """
+    import sqlite3
+
+    props = unit.get("properties", {}) or {}
+    # ponytail: name resolution prefers hanzi (sentences/words/compounds) then
+    # display_name (groups). The migration script uses payload.get("name", "")
+    # which is usually empty; we do better here so the browse endpoint can
+    # use the name column directly if needed.
+    name = props.get("hanzi") or props.get("display_name") or unit.get("name", "")
+    row = (
+        unit["id"],
+        unit["type"],
+        0,  # sort_key — matching migration script default
+        name,
+        props.get("pinyin"),
+        props.get("english"),
+        props.get("meaning") or None,
+        json.dumps(props, ensure_ascii=False),
+        unit.get("created", ""),
+        unit.get("updated", ""),
+        1 if unit.get("author_confirmed") else 0,
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO unit "
+        "(id, type, sort_key, name, pinyin, english, gloss, properties, created, updated, author_confirmed) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        row,
+    )
+    # Also upsert into FTS5 for search.
+    conn.execute(
+        "INSERT OR REPLACE INTO unit_fts (id, type, name, english, gloss) VALUES (?, ?, ?, ?, ?)",
+        (
+            unit["id"],
+            unit["type"],
+            name,
+            props.get("english") or "",
+            props.get("meaning") or "",
+        ),
+    )
+
+
+def _upsert_edges(conn, unit_id: str, connections: list[dict]) -> None:
+    """Upsert edges for a unit into the SQLite ``edge`` table.
+
+    Deletes all existing edges where this unit is the source, then inserts
+    the new edges from the ``connections`` array. This is simpler than diffing
+    old vs new edges and ensures the edge table stays in sync with the JSON.
+    """
+    # Delete existing edges for this source.
+    conn.execute("DELETE FROM edge WHERE source_id = ?", (unit_id,))
+    # Insert new edges.
+    for conn_dict in connections:
+        target_id = conn_dict.get("to")
+        kind = conn_dict.get("kind")
+        score = conn_dict.get("score")
+        if not target_id or not kind:
+            continue
+        conn.execute(
+            "INSERT INTO edge (source_id, target_id, kind, score) VALUES (?, ?, ?, ?)",
+            (unit_id, target_id, kind, score),
+        )

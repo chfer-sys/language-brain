@@ -26,6 +26,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, status
 
 from api.config import settings
+from api.services.db import get_connection
 from api.services.unit_writer import (
     VALID_UNIT_TYPES,
     list_units_by_type,
@@ -42,12 +43,31 @@ def _sentence_ids_containing_word(vault_root: str, word_id: str, word_hanzi: str
     words include ``word_hanzi``.
 
     Used to back AC27 (word detail page lists containing sentences).
-    Each sentence unit's ``properties.words`` is the list of hanzi
-    tokens; ``properties.word_refs`` is the matching list of
-    tone-marked-pinyin ids (per OQ2). A match on either is a hit.
+    v0.10: query the ``edge`` table (kind=word_of) instead of scanning
+    all sentence JSON files. Falls back to JSON scan if SQLite returns
+    no results (edge table may not be populated yet).
 
-    Order is filesystem-glob order, which is stable enough for MVP.
+    Order is by sentence id ascending (stable).
     """
+    # v0.10: query edge table for word_of edges where target is this word.
+    import sqlite3
+
+    try:
+        conn = get_connection(vault_root)
+        try:
+            rows = conn.execute(
+                "SELECT source_id FROM edge WHERE target_id = ? AND kind = 'word_of' ORDER BY source_id",
+                (word_id,),
+            ).fetchall()
+            if rows:
+                return [row["source_id"] for row in rows]
+        finally:
+            conn.close()
+    except sqlite3.OperationalError:
+        # Table doesn't exist yet (database not migrated). Fall through to JSON scan.
+        pass
+
+    # Fallback: JSON scan (edge table may not be populated yet).
     sentences_dir = Path(vault_root) / "units" / "sentences"
     if not sentences_dir.is_dir():
         return []
@@ -162,21 +182,43 @@ def get_unit(unit_id: str) -> dict:
             # ponytail: O(n) scan over all word files; ceiling is acceptable
             # at MVP scale (solo-dev vault, low thousands of word files);
             # upgrade path is v0.5.5 SQLite word table.
+            # v0.10: route through SQLite instead of JSON scan.
+            # v0.10 fix: single IN query instead of N queries (one per char).
             constituent_cache: dict[str, str] = {}
             compound_chars = set(compound_hanzi)
-            for word_unit in list_units_by_type(settings.vault, "word"):
-                if word_unit.get("type") != "word":
-                    continue
-                w_props = word_unit.get("properties", {})
-                w_hanzi = w_props.get("hanzi", "") or ""
-                if len(w_hanzi) == 1 and w_hanzi in compound_chars:
-                    # ponytail: name resolution uses _name_cache for repeat hits;
-                    # the local constituent_cache avoids re-reading the same word
-                    # file for each character match.
-                    if word_unit["id"] not in constituent_cache:
-                        constituent_cache[word_unit["id"]] = _connection_name(
-                            settings.vault, word_unit["id"], _name_cache
-                        )
+            # Query SQLite for single-character words whose hanzi is in the compound.
+            import sqlite3
+
+            try:
+                conn = get_connection(settings.vault)
+                try:
+                    # Build a single IN query for all chars (AC5: 1 query, not N).
+                    if compound_chars:
+                        placeholders = ",".join("?" * len(compound_chars))
+                        rows = conn.execute(
+                            f"SELECT id, name FROM unit WHERE type = 'word' AND length(name) = 1 AND name IN ({placeholders})",
+                            tuple(compound_chars),
+                        ).fetchall()
+                        for row in rows:
+                            wid = row["id"]
+                            if wid not in constituent_cache:
+                                constituent_cache[wid] = _connection_name(
+                                    settings.vault, wid, _name_cache
+                                )
+                finally:
+                    conn.close()
+            except sqlite3.OperationalError:
+                # Table doesn't exist yet (database not migrated). Fall back to JSON scan.
+                for word_unit in list_units_by_type(settings.vault, "word"):
+                    if word_unit.get("type") != "word":
+                        continue
+                    w_props = word_unit.get("properties", {})
+                    w_hanzi = w_props.get("hanzi", "") or ""
+                    if len(w_hanzi) == 1 and w_hanzi in compound_chars:
+                        if word_unit["id"] not in constituent_cache:
+                            constituent_cache[word_unit["id"]] = _connection_name(
+                                settings.vault, word_unit["id"], _name_cache
+                            )
             data["constituent_characters"] = [
                 {"id": wid, "name": name}
                 for wid, name in sorted(constituent_cache.items())

@@ -73,6 +73,11 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from api.services.db import (
+    get_units_by_ids_sqlite,
+    list_units_by_type_sqlite,
+    list_units_by_types_sqlite,
+)
 from api.services.embedder import Embedder, get_embedder
 from api.services.indexer import Index
 from api.services.lexical import _strip_diacritics, jaccard, tokenize_sentence
@@ -561,19 +566,32 @@ def lexical_search(
     include_words = "word" in selected
     include_groups = "group" in selected
 
-    # Step 3 — load units. list_units_by_type is sorted by id and
-    # skips corrupt files, so the I/O layer mirrors the ranker's
-    # determinism contract.
-    # Sentences are loaded when the sentence pass runs (include_sentences)
-    # OR when word hits need containing_sentences resolution (include_words).
-    # A groups-only search skips the scan — those sentences would never be
-    # read. ponytail: ceiling — if a future hit type also needs sentence
-    # lookups, extend the condition.
+    # Step 3 — load units. v0.10: route through SQLite instead of JSON
+    # file scan. Consolidate all needed types into ONE query via
+    # list_units_by_types_sqlite (AC2: ≤2 SELECTs total; this is 1).
+    # Falls back per-type to JSON path if SQLite returns empty (database
+    # not migrated).
+    types_to_fetch: list[str] = []
     if include_sentences or include_words:
-        sentences = list_units_by_type(vault_root, "sentence")
+        types_to_fetch.append("sentence")
+    if include_words:
+        types_to_fetch.append("word")
+    if include_groups:
+        types_to_fetch.append("group")
+
+    if types_to_fetch:
+        by_type = list_units_by_types_sqlite(vault_root, types_to_fetch)
+        # JSON fallback per type
+        for t in types_to_fetch:
+            if not by_type.get(t):
+                by_type[t] = list_units_by_type(vault_root, t)
+        sentences = by_type.get("sentence", [])
+        words = by_type.get("word", [])
+        group_units = by_type.get("group", [])
     else:
         sentences = []
-    words = list_units_by_type(vault_root, "word") if include_words else []
+        words = []
+        group_units = []
 
     # Step 4 — pure rank. Sentence + word pass uses Jaccard over
     # hanzi tokens. The group pass uses :func:`group_search`,
@@ -607,7 +625,7 @@ def lexical_search(
         if isinstance(uid, str) and uid:
             units_by_id[(uid, "word")] = unit
     if include_groups:
-        for unit in list_units_by_type(vault_root, "group"):
+        for unit in group_units:
             uid = unit.get("id")
             if isinstance(uid, str) and uid:
                 units_by_id[(uid, "group")] = unit
@@ -620,17 +638,14 @@ def lexical_search(
     # display_name and slug id so the AC21 invariant (no natural
     # English in name/snippet) holds for groups too.
     if include_groups and hits:
-        groups_index = {
-            (g.get("id"), "group"): g
-            for g in list_units_by_type(vault_root, "group")
-            if isinstance(g, dict) and isinstance(g.get("id"), str)
-        }
+        # ponytail: reuse groups already fetched in the consolidated
+        # query at step 3 — no second SELECT needed.
         patched: list[SearchHit] = []
         for hit in hits:
             if hit.unit_type != "group":
                 patched.append(hit)
                 continue
-            unit = groups_index.get((hit.unit_id, "group"))
+            unit = units_by_id.get((hit.unit_id, "group"))
             display_name = ""
             if isinstance(unit, dict):
                 properties = unit.get("properties")
@@ -743,7 +758,9 @@ def group_search(
     if not raw_tokens:
         return []
 
-    groups = list_units_by_type(vault_root, "group")
+    groups = list_units_by_type_sqlite(vault_root, "group")
+    if not groups:
+        groups = list_units_by_type(vault_root, "group")
 
     ranked: list[tuple[str, str, float]] = []
     first_token_first_char = raw_tokens[0][:1]
@@ -1010,7 +1027,14 @@ def semantic_search(
         return []
     query_vec = embedder.embed(query)
     raw_hits = index.search(query_vec, k=limit)
-    sentences_by_id = {s["id"]: s for s in list_units_by_type(vault_root, "sentence")}
+    # v0.10: resolve FAISS hit unit_ids via SQLite (1 query) instead of
+    # loading all sentence JSON files. Falls back to JSON path if SQLite
+    # returns empty (database not migrated).
+    hit_ids = [raw.unit_id for raw in raw_hits]
+    sentences_by_id = get_units_by_ids_sqlite(vault_root, hit_ids)
+    if not sentences_by_id:
+        # Fallback: JSON path (database not migrated or units not in SQLite).
+        sentences_by_id = {s["id"]: s for s in list_units_by_type(vault_root, "sentence")}
     out: list[SearchHit] = []
     for raw in raw_hits:
         if raw.score <= threshold:
@@ -1163,7 +1187,10 @@ def suggest_units(
     out: list[tuple[str, str, str]] = []  # (sort_name, id, type)
 
     if include_sentences:
-        for unit in list_units_by_type(vault_root, "sentence"):
+        sentence_units = list_units_by_type_sqlite(vault_root, "sentence")
+        if not sentence_units:
+            sentence_units = list_units_by_type(vault_root, "sentence")
+        for unit in sentence_units:
             if not isinstance(unit, dict):
                 continue
             uid = unit.get("id")
@@ -1177,7 +1204,10 @@ def suggest_units(
                 out.append((hanzi, uid, "sentence"))
 
     if include_words:
-        for unit in list_units_by_type(vault_root, "word"):
+        word_units = list_units_by_type_sqlite(vault_root, "word")
+        if not word_units:
+            word_units = list_units_by_type(vault_root, "word")
+        for unit in word_units:
             if not isinstance(unit, dict):
                 continue
             uid = unit.get("id")
@@ -1191,7 +1221,10 @@ def suggest_units(
                 out.append((hanzi, uid, "word"))
 
     if include_groups:
-        for unit in list_units_by_type(vault_root, "group"):
+        group_units = list_units_by_type_sqlite(vault_root, "group")
+        if not group_units:
+            group_units = list_units_by_type(vault_root, "group")
+        for unit in group_units:
             if not isinstance(unit, dict):
                 continue
             uid = unit.get("id")
@@ -1348,9 +1381,16 @@ def meanings_search(
     # serialization doesn't echo it.
     text = ""
     raw_hits = index.search(query_vec, k=limit)
-    sentences_by_id = {
-        s["id"]: s for s in list_units_by_type(vault_root, "sentence")
-    }
+    # v0.10: resolve FAISS hit unit_ids via SQLite (1 query) instead of
+    # loading all sentence JSON files. Falls back to JSON path if SQLite
+    # returns empty (database not migrated).
+    hit_ids = [raw.unit_id for raw in raw_hits]
+    sentences_by_id = get_units_by_ids_sqlite(vault_root, hit_ids)
+    if not sentences_by_id:
+        # Fallback: JSON path (database not migrated or units not in SQLite).
+        sentences_by_id = {
+            s["id"]: s for s in list_units_by_type(vault_root, "sentence")
+        }
     out: list[dict] = []
     for raw in raw_hits:
         # Strict-greater filter matches the SPEC's "cosine > threshold"
