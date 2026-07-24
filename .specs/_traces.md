@@ -1376,3 +1376,66 @@ groups, and antonyms all real and correct. Steady-state latency
 
 status: deployed
 
+---
+
+## 2026-07-24 — Proposer model switch: deepseek-v4-flash → mimo-v2.5
+
+**What changed** (commit `76fcb6aa` on `kickoff/v0.9-integration`):
+
+One-line change in `ops/deploy.sh`:
+`-e LANGUAGE_BRAIN_AI_MODEL='deepseek-v4-flash'` →
+`-e LANGUAGE_BRAIN_AI_MODEL='mimo-v2.5'`. No code change in
+`api/services/ai_client.py` — the existing hardcoded
+`"reasoning_effort": "low"` is accepted by mimo-v2.5.
+
+**Rationale**: Direct API probe showed mimo-v2.5 + reasoning_effort "low"
+= 3.7s, zero reasoning tokens, valid complete JSON. DeepSeek was 15–35s
+with high variance.
+
+**Deploy procedure** (safe-server-deploy skill + ENV OVERRIDE):
+
+- Server clone at `/opt/language-brain/src` switched to
+  `kickoff/v0.9-integration`, pulled to `76fcb6aa`.
+- Container env captured via `docker inspect` `%q` template.
+- CRITICAL: edited `/tmp/lb-env.sh` on server — stripped literal quotes
+  (`sed -i "s/\"//g"`) AND overrode
+  `LANGUAGE_BRAIN_AI_MODEL=deepseek-v4-flash` →
+  `LANGUAGE_BRAIN_AI_MODEL=mimo-v2.5`. Without this override, the
+  recreated container would have kept the old model.
+- Ports template failed (known `%q` gotcha) — hardcoded `-p 8000:8000`.
+- Image rebuilt on server (cached, ~3s).
+- Container recreated; `docker inspect` confirmed
+  `LANGUAGE_BRAIN_AI_MODEL=mimo-v2.5`.
+
+**Live verification (from Mac, 192.168.100.101:8000)**:
+
+```
+GET /healthz:
+  → {"status":"ok","ai_model":"mimo-v2.5","mock_mode":"false"}  ✅
+
+POST /api/sentences (我们周末一起去看电影吧, "Let's go see a movie together this weekend"):
+  → HTTP 200, 6.24s, degraded:false
+  → pinyin: wǒ men zhōu mò yī qǐ qù kàn diàn yǐng ba  ✅
+  → words: 我们,周末,一起,去,看,电影,吧  ✅
+  → word_refs: wǒ men,zhōu mò,yī qǐ,qù,kàn,diàn yǐng,ba  ✅
+
+POST /api/sentences (这个菜太辣了, "This dish is too spicy"):
+  → HTTP 200, 5.45s, degraded:false
+  → pinyin: zhè ge cài tài là le  ✅
+  → words: 这,个,菜,太,辣,了  ✅
+  → word_refs: zhè,ge,cài,tài,là,le  ✅
+
+POST /api/sentences (repeat 我们周末一起去看电影吧):
+  → HTTP 200, 0.16s (cache hit), degraded:false  ✅
+```
+
+Latency 5–6s steady-state (was 15–35s with deepseek). Cache hit
+near-instant. All fields real and correct.
+
+**Test totals**: 668 passed, 0 failed (full `tests/api/` suite).
+
+**Branch deployed**: `kickoff/v0.9-integration`
+**Commit**: `76fcb6aa`
+
+status: deployed
+
