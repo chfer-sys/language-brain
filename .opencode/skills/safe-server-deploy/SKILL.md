@@ -50,9 +50,9 @@ Report findings; let the user pick build-on-server vs build-and-transfer.
 
 ```bash
 ssh root@192.168.100.101 '
-ENV_ARGS=$(docker inspect language-brain --format "{{range .Config.Env}}{{printf \"-e %q \" .}}{{end}}")
+ENV_ARGS=$(docker inspect language-brain --format "{{range .Config.Env}}{{printf \"-e %s \" .}}{{end}}")
 MOUNT_ARGS=$(docker inspect language-brain --format "{{range .Mounts}}{{printf \"-v %s:%s \" .Source .Destination}}{{end}}")
-PORT_ARGS=$(docker inspect language-brain --format "{{range \$p, \$b := .HostConfig.PortBindings}}{{range \$b}}{{printf \"-p %s:%s \" \$p (index . 0).HostPort}}{{end}}{{end}}")
+PORT_ARGS=$(docker inspect language-brain --format '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{printf "-p %s:%s " (index (split $p "/") 0) (index . 0).HostPort}}{{end}}{{end}}')
 RESTART=$(docker inspect language-brain --format "{{.HostConfig.RestartPolicy.Name}}")
 echo "$ENV_ARGS"   > /tmp/lb-env.sh
 echo "$MOUNT_ARGS" > /tmp/lb-mounts.sh
@@ -63,6 +63,31 @@ echo "$RESTART"    > /tmp/lb-restart.txt
 
 If `PORT_ARGS` ends up empty (template parse error observed once), fall back to hardcoded `-p 8000:8000` in step 5.
 
+### 2.5. Strip quotes from env file (mandatory)
+
+The `%s` template may still produce quoted values if the original env var contained spaces. Strip all literal quotes to prevent parsing errors:
+
+```bash
+ssh root@192.168.100.101 'sed -i "s/\"//g" /tmp/lb-env.sh'
+```
+
+This is a known gotcha from the v0.9 deploys (2026-07-24). Without this step, the recreated container will have malformed env vars (e.g., `mock_mode:true`).
+
+### 2.6. Selective env override (optional)
+
+If the user wants to change a specific env var while preserving everything else, edit `/tmp/lb-env.sh` on the server:
+
+```bash
+ssh root@192.168.100.101 '
+# Example: override AI model
+sed -i "s/LANGUAGE_BRAIN_AI_MODEL=[^ ]*/LANGUAGE_BRAIN_AI_MODEL=mimo-v2.5/g" /tmp/lb-env.sh
+# Verify the change
+grep LANGUAGE_BRAIN_AI_MODEL /tmp/lb-env.sh
+'
+```
+
+This was a critical gotcha in the mimo-v2.5 deploy (2026-07-24): without the override, the recreated container kept the old `deepseek-v4-flash` model.
+
 ### 3. Update source on server — STASH FIRST
 
 The server clone at `/opt/language-brain/src` accumulates local modifications across deploys (`.specs/_traces.md` and `vault/.gitkeep` files were stashed on 2026-07-16). Always stash before pulling.
@@ -70,13 +95,18 @@ The server clone at `/opt/language-brain/src` accumulates local modifications ac
 ```bash
 ssh root@192.168.100.101 '
 cd /opt/language-brain/src
+# Detect current branch (preserve it — the live server may run a feature branch)
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+echo "Current branch: $CURRENT_BRANCH"
 git stash push -u -m "pre-deploy-stash" 2>&1 | tail -3
 git fetch origin 2>&1 | tail -3
-git checkout main 2>&1
-git pull origin main 2>&1 | tail -5
+git checkout "$CURRENT_BRANCH" 2>&1
+git pull origin "$CURRENT_BRANCH" 2>&1 | tail -5
 git log -1 --format="%H %s"
 '
 ```
+
+If the user explicitly requests a branch switch (e.g., "deploy v0.9 to the server"), override `$CURRENT_BRANCH` with the target branch before the checkout.
 
 Tell the user about any stash created — they may want to inspect later.
 
