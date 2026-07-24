@@ -13,7 +13,9 @@ AC9: All existing tests pass (verified separately by running full suite).
 
 from __future__ import annotations
 
+import sqlite3
 import time
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,6 +25,32 @@ from api.main import app
 from api.services.db import get_connection, init_schema, list_units_by_type_sqlite
 from api.services.unit_writer import list_units_by_type, write_unit
 from scripts.migrate_json_to_sqlite import migrate
+
+
+class _QueryTracker:
+    """Context manager that traces all sqlite3 connections opened within."""
+
+    def __init__(self):
+        self.queries: list[str] = []
+        self._orig_connect = None
+
+    def _traced_connect(self, *args, **kwargs):
+        conn = self._orig_connect(*args, **kwargs)
+        conn.set_trace_callback(lambda stmt: self.queries.append(stmt))
+        return conn
+
+    def __enter__(self):
+        self._orig_connect = sqlite3.connect
+        # Patch sqlite3.connect globally so every new connection is traced
+        sqlite3.connect = self._traced_connect
+        return self
+
+    def __exit__(self, *exc):
+        sqlite3.connect = self._orig_connect
+        return False
+
+    def select_count(self):
+        return len([q for q in self.queries if q.strip().upper().startswith("SELECT")])
 
 
 @pytest.fixture
@@ -134,7 +162,9 @@ def test_vault_list_uses_sqlite(client_with_vault):
     _seed_vault(vault)
     migrate(vault)  # Populate SQLite from JSON
 
-    response = client.get("/api/vault/list?type=sentence&limit=50&offset=0")
+    with _QueryTracker() as tracker:
+        response = client.get("/api/vault/list?type=sentence&limit=50&offset=0")
+
     assert response.status_code == 200
     body = response.json()
 
@@ -142,9 +172,10 @@ def test_vault_list_uses_sqlite(client_with_vault):
     assert body["total"] == 2
     assert len(body["items"]) == 2
 
-    # The route uses SQLite (verified by the fact that it works after migration)
-    # Query count tracking is difficult because sqlite3.Connection.execute is
-    # read-only, but the route's implementation uses a single SELECT query.
+    # AC1: ≤1 SQLite query
+    assert tracker.select_count() <= 1, (
+        f"AC1: expected ≤1 SELECT query, got {tracker.select_count()}"
+    )
 
 
 def test_vault_list_sqlite_matches_json(client_with_vault):
@@ -185,14 +216,18 @@ def test_lexical_search_uses_sqlite(client_with_vault):
     _seed_vault(vault)
     migrate(vault)
 
-    # The search route is tested via the existing test_search.py tests.
-    # Here we just verify the SQLite path returns the same results as JSON.
     from api.services.search import lexical_search
 
-    sqlite_hits = lexical_search(vault, "喜欢", limit=10)
+    with _QueryTracker() as tracker:
+        sqlite_hits = lexical_search(vault, "喜欢", limit=10)
 
     # Verify we got hits
     assert len(sqlite_hits) > 0
+
+    # AC2: ≤2 SELECT queries (one for sentences, one for words)
+    assert tracker.select_count() <= 2, (
+        f"AC2: expected ≤2 SELECT queries, got {tracker.select_count()}"
+    )
 
 
 def test_semantic_search_uses_sqlite(client_with_vault):
@@ -201,14 +236,19 @@ def test_semantic_search_uses_sqlite(client_with_vault):
     _seed_vault(vault)
     migrate(vault)
 
-    # Semantic search requires embeddings, which are expensive to compute
-    # in tests. We'll just verify the function doesn't crash and uses SQLite.
-    # The actual semantic search tests are in test_semantic_search.py.
     from api.services.search import semantic_search
 
-    # This will return [] because there's no FAISS index, but it shouldn't crash
-    hits = semantic_search(vault, "running", limit=10)
+    with _QueryTracker() as tracker:
+        # This will return [] because there's no FAISS index, but it shouldn't crash
+        hits = semantic_search(vault, "running", limit=10)
+
     assert isinstance(hits, list)
+
+    # AC3: 1 SELECT query to resolve FAISS hit unit_ids
+    # (when there are no hits, there may be 0 queries — that's fine)
+    assert tracker.select_count() <= 1, (
+        f"AC3: expected ≤1 SELECT query, got {tracker.select_count()}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +262,9 @@ def test_word_containing_sentences_uses_sqlite(client_with_vault):
     _seed_vault(vault)
     migrate(vault)
 
-    response = client.get("/api/units/W1")
+    with _QueryTracker() as tracker:
+        response = client.get("/api/units/W1")
+
     assert response.status_code == 200
     body = response.json()
 
@@ -230,6 +272,16 @@ def test_word_containing_sentences_uses_sqlite(client_with_vault):
     assert "containing_sentences" in body
     assert len(body["containing_sentences"]) > 0
     assert body["containing_sentences"][0]["id"] == "S1"
+
+    # AC4: 1 SELECT query on edge table for containing_sentences
+    # (the unit read itself is from JSON, so only the edge query counts)
+    edge_queries = [
+        q for q in tracker.queries
+        if q.strip().upper().startswith("SELECT") and "edge" in q.lower()
+    ]
+    assert len(edge_queries) <= 1, (
+        f"AC4: expected ≤1 edge SELECT query, got {len(edge_queries)}"
+    )
 
 
 def test_compound_constituents_uses_sqlite(client_with_vault):
@@ -255,12 +307,26 @@ def test_compound_constituents_uses_sqlite(client_with_vault):
         )
     migrate(vault)  # Re-migrate to pick up the new words
 
-    response = client.get("/api/units/C1")
+    with _QueryTracker() as tracker:
+        response = client.get("/api/units/C1")
+
     assert response.status_code == 200
     body = response.json()
 
     # Should have constituent_characters
     assert "constituent_characters" in body
+
+    # AC5: exactly 1 SELECT query for constituent characters (not N queries)
+    # ponytail: we count queries that hit the unit table for single-char words
+    unit_queries = [
+        q for q in tracker.queries
+        if q.strip().upper().startswith("SELECT")
+        and "unit" in q.lower()
+        and "length" in q.lower()
+    ]
+    assert len(unit_queries) == 1, (
+        f"AC5: expected exactly 1 constituent-char SELECT query, got {len(unit_queries)}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -284,13 +350,22 @@ def test_compute_connections_uses_sqlite(client_with_vault):
 
             return np.zeros(384, dtype=np.float32)
 
-    result = compute_connections(vault, semantic_threshold=0.6, embedder=MockEmbedder())
+    with _QueryTracker() as tracker:
+        result = compute_connections(
+            vault, semantic_threshold=0.6, embedder=MockEmbedder()
+        )
 
     # Verify the result shape
     assert "lexical_pairs" in result
     assert "semantic_pairs" in result
     assert "group_pairs" in result
     assert "opposite_pairs" in result
+
+    # AC6: ≤3 SELECT queries total for reading units + edges
+    # (we fetch all units in 1 query + all edges in 1 query = 2 total)
+    assert tracker.select_count() <= 3, (
+        f"AC6: expected ≤3 SELECT queries, got {tracker.select_count()}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -360,10 +435,11 @@ def test_vault_list_performance_500_sentences(client_with_vault):
 
     migrate(vault)  # Populate SQLite
 
-    # Time the request
-    start = time.perf_counter()
-    response = client.get("/api/vault/list?type=sentence&limit=50&offset=0")
-    elapsed_ms = (time.perf_counter() - start) * 1000
+    # Time the request and count queries
+    with _QueryTracker() as tracker:
+        start = time.perf_counter()
+        response = client.get("/api/vault/list?type=sentence&limit=50&offset=0")
+        elapsed_ms = (time.perf_counter() - start) * 1000
 
     assert response.status_code == 200
     body = response.json()
@@ -372,6 +448,11 @@ def test_vault_list_performance_500_sentences(client_with_vault):
 
     # Should complete in <50ms (SQLite is fast)
     assert elapsed_ms < 50, f"browse took {elapsed_ms:.2f}ms, expected <50ms"
+
+    # AC8: ≤1 SQLite query
+    assert tracker.select_count() <= 1, (
+        f"AC8: expected ≤1 SELECT query, got {tracker.select_count()}"
+    )
 
 
 # ---------------------------------------------------------------------------

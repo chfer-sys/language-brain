@@ -205,6 +205,74 @@ def list_units_by_type_sqlite(
         conn.close()
 
 
+def list_units_by_types_sqlite(
+    vault_root: str, unit_types: list[str]
+) -> dict[str, list[dict]]:
+    """Fetch units of multiple types in ONE query, partitioned by type.
+
+    Returns a dict mapping type -> list of unit dicts. Each unit dict has
+    the same shape as ``list_units_by_type_sqlite`` but with an empty
+    ``connections`` list (edges are not fetched here — use
+    ``fetch_all_edges_sqlite`` to get edges in a separate query).
+
+    ponytail: ceiling — loads all units of the given types into memory;
+    fine to ~50k units, denormalize beyond that.
+    """
+    if not unit_types:
+        return {}
+    conn = get_connection(vault_root)
+    try:
+        placeholders = ",".join("?" * len(unit_types))
+        rows = conn.execute(
+            f"SELECT id, type, name, pinyin, properties, created, updated, author_confirmed "
+            f"FROM unit WHERE type IN ({placeholders}) ORDER BY id",
+            tuple(unit_types),
+        ).fetchall()
+        # Partition by type
+        by_type: dict[str, list[dict]] = {t: [] for t in unit_types}
+        for row in rows:
+            unit_dict = _row_to_unit_dict(row, {})
+            unit_type = row["type"]
+            if unit_type in by_type:
+                by_type[unit_type].append(unit_dict)
+        return by_type
+    except sqlite3.OperationalError:
+        return {t: [] for t in unit_types}
+    finally:
+        conn.close()
+
+
+def fetch_all_edges_sqlite(vault_root: str) -> dict[str, list[dict]]:
+    """Fetch ALL edges in ONE query, grouped by source_id.
+
+    Returns a dict mapping source_id -> list of edge dicts (each with
+    keys: to, kind, score). Used by ``compute_connections`` to stitch
+    edges onto units after fetching them in bulk.
+
+    ponytail: ceiling — loads all edges into memory; fine to ~50k edges,
+    denormalize beyond that.
+    """
+    conn = get_connection(vault_root)
+    try:
+        rows = conn.execute(
+            "SELECT source_id, target_id, kind, score FROM edge"
+        ).fetchall()
+        by_source: dict[str, list[dict]] = {}
+        for row in rows:
+            by_source.setdefault(row["source_id"], []).append(
+                {
+                    "to": row["target_id"],
+                    "kind": row["kind"],
+                    "score": row["score"],
+                }
+            )
+        return by_source
+    except sqlite3.OperationalError:
+        return {}
+    finally:
+        conn.close()
+
+
 def _row_to_unit_dict(row: sqlite3.Row, connections_by_source: dict[str, list[dict]]) -> dict:
     """Reconstruct a unit dict from a SQLite row + pre-fetched connections."""
     props = json.loads(row["properties"]) if row["properties"] else {}

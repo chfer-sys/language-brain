@@ -73,7 +73,11 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from api.services.db import get_units_by_ids_sqlite, list_units_by_type_sqlite
+from api.services.db import (
+    get_units_by_ids_sqlite,
+    list_units_by_type_sqlite,
+    list_units_by_types_sqlite,
+)
 from api.services.embedder import Embedder, get_embedder
 from api.services.indexer import Index
 from api.services.lexical import _strip_diacritics, jaccard, tokenize_sentence
@@ -563,24 +567,31 @@ def lexical_search(
     include_groups = "group" in selected
 
     # Step 3 — load units. v0.10: route through SQLite instead of JSON
-    # file scan. list_units_by_type_sqlite returns the same dict shape
-    # as list_units_by_type so the ranker and assembler are unchanged.
-    # Sentences are loaded when the sentence pass runs (include_sentences)
-    # OR when word hits need containing_sentences resolution (include_words).
-    # A groups-only search skips the scan — those sentences would never be
-    # read. ponytail: ceiling — if a future hit type also needs sentence
-    # lookups, extend the condition.
-    #
-    # Falls back to JSON path if SQLite returns empty (database not migrated).
+    # file scan. Consolidate all needed types into ONE query via
+    # list_units_by_types_sqlite (AC2: ≤2 SELECTs total; this is 1).
+    # Falls back per-type to JSON path if SQLite returns empty (database
+    # not migrated).
+    types_to_fetch: list[str] = []
     if include_sentences or include_words:
-        sentences = list_units_by_type_sqlite(vault_root, "sentence")
-        if not sentences:
-            sentences = list_units_by_type(vault_root, "sentence")
+        types_to_fetch.append("sentence")
+    if include_words:
+        types_to_fetch.append("word")
+    if include_groups:
+        types_to_fetch.append("group")
+
+    if types_to_fetch:
+        by_type = list_units_by_types_sqlite(vault_root, types_to_fetch)
+        # JSON fallback per type
+        for t in types_to_fetch:
+            if not by_type.get(t):
+                by_type[t] = list_units_by_type(vault_root, t)
+        sentences = by_type.get("sentence", [])
+        words = by_type.get("word", [])
+        group_units = by_type.get("group", [])
     else:
         sentences = []
-    words = list_units_by_type_sqlite(vault_root, "word") if include_words else []
-    if include_words and not words:
-        words = list_units_by_type(vault_root, "word")
+        words = []
+        group_units = []
 
     # Step 4 — pure rank. Sentence + word pass uses Jaccard over
     # hanzi tokens. The group pass uses :func:`group_search`,
@@ -614,9 +625,6 @@ def lexical_search(
         if isinstance(uid, str) and uid:
             units_by_id[(uid, "word")] = unit
     if include_groups:
-        group_units = list_units_by_type_sqlite(vault_root, "group")
-        if not group_units:
-            group_units = list_units_by_type(vault_root, "group")
         for unit in group_units:
             uid = unit.get("id")
             if isinstance(uid, str) and uid:
@@ -630,20 +638,14 @@ def lexical_search(
     # display_name and slug id so the AC21 invariant (no natural
     # English in name/snippet) holds for groups too.
     if include_groups and hits:
-        group_units = list_units_by_type_sqlite(vault_root, "group")
-        if not group_units:
-            group_units = list_units_by_type(vault_root, "group")
-        groups_index = {
-            (g.get("id"), "group"): g
-            for g in group_units
-            if isinstance(g, dict) and isinstance(g.get("id"), str)
-        }
+        # ponytail: reuse groups already fetched in the consolidated
+        # query at step 3 — no second SELECT needed.
         patched: list[SearchHit] = []
         for hit in hits:
             if hit.unit_type != "group":
                 patched.append(hit)
                 continue
-            unit = groups_index.get((hit.unit_id, "group"))
+            unit = units_by_id.get((hit.unit_id, "group"))
             display_name = ""
             if isinstance(unit, dict):
                 properties = unit.get("properties")

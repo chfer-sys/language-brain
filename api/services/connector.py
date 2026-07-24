@@ -129,7 +129,11 @@ from typing import Any
 import numpy as np
 
 from api.services.lexical import jaccard, tokenize_sentence
-from api.services.db import list_units_by_type_sqlite
+from api.services.db import (
+    fetch_all_edges_sqlite,
+    list_units_by_type_sqlite,
+    list_units_by_types_sqlite,
+)
 from api.services.unit_writer import list_units_by_type, write_unit
 
 
@@ -1298,9 +1302,24 @@ def compute_connections(
     _validate_vault_root(vault_root)
 
     # v0.10: route through SQLite instead of JSON file scan.
-    # include_connections=True reconstructs the connections array from
-    # the edge table so the write side can append to it.
-    sentences = list_units_by_type_sqlite(vault_root, "sentence", include_connections=True)
+    # v0.10 fix (AC6): fetch all units in ONE query (not 3), and all edges
+    # in ONE query (not 3). Total: 2 queries instead of 6.
+    # ponytail: ceiling — loads all units and edges into memory; fine to
+    # ~50k units/edges, denormalize beyond that.
+    units_by_type = list_units_by_types_sqlite(
+        vault_root, ["sentence", "group", "word"]
+    )
+    sentences = units_by_type.get("sentence", [])
+    groups = units_by_type.get("group", [])
+    words = units_by_type.get("word", [])
+
+    # Fetch all edges in one query and stitch them onto units.
+    all_edges = fetch_all_edges_sqlite(vault_root)
+    for unit in sentences + groups + words:
+        unit_id = unit.get("id")
+        if unit_id and unit_id in all_edges:
+            unit["connections"] = all_edges[unit_id]
+
     lexical_edges, lexical_pairs, _lexical_skipped = (
         _compute_sentence_lexical_edges(sentences)
     )
@@ -1326,8 +1345,7 @@ def compute_connections(
     # and uses no embedder, so its failure mode (no groups on
     # disk) gracefully degrades to "zero group pairs" without
     # affecting the other counts.
-    # v0.10: route through SQLite.
-    groups = list_units_by_type_sqlite(vault_root, "group", include_connections=True)
+    # v0.10: route through SQLite (already fetched in bulk above).
     group_edges, group_pairs, _group_skipped = (
         _compute_sentence_group_edges(sentences, groups)
     )
@@ -1339,8 +1357,7 @@ def compute_connections(
     # the OTHER word's ``antonyms`` array. See
     # :func:`_compute_word_opposite_edges` for the full contract,
     # including the "skip unknown targets" decision.
-    # v0.10: route through SQLite.
-    words = list_units_by_type_sqlite(vault_root, "word", include_connections=True)
+    # v0.10: route through SQLite (already fetched in bulk above).
     opposite_edges, opposite_pairs, symmetry_pairs = (
         _compute_word_opposite_edges(words)
     )

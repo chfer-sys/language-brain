@@ -183,6 +183,7 @@ def get_unit(unit_id: str) -> dict:
             # at MVP scale (solo-dev vault, low thousands of word files);
             # upgrade path is v0.5.5 SQLite word table.
             # v0.10: route through SQLite instead of JSON scan.
+            # v0.10 fix: single IN query instead of N queries (one per char).
             constituent_cache: dict[str, str] = {}
             compound_chars = set(compound_hanzi)
             # Query SQLite for single-character words whose hanzi is in the compound.
@@ -191,13 +192,12 @@ def get_unit(unit_id: str) -> dict:
             try:
                 conn = get_connection(settings.vault)
                 try:
-                    # Build a query that matches single-char words in the compound.
-                    # ponytail: ceiling — uses LIKE for each char; upgrade path is
-                    # a virtual table or FTS5 query for larger compound char sets.
-                    for char in compound_chars:
+                    # Build a single IN query for all chars (AC5: 1 query, not N).
+                    if compound_chars:
+                        placeholders = ",".join("?" * len(compound_chars))
                         rows = conn.execute(
-                            "SELECT id, name FROM unit WHERE type = 'word' AND name = ?",
-                            (char,),
+                            f"SELECT id, name FROM unit WHERE type = 'word' AND length(name) = 1 AND name IN ({placeholders})",
+                            tuple(compound_chars),
                         ).fetchall()
                         for row in rows:
                             wid = row["id"]
