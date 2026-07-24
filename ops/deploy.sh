@@ -41,7 +41,7 @@ DOCKER_CMD="docker run -d \\
   -p 8000:8000 \\
   -e LANGUAGE_BRAIN_AI_KEY='$KEY' \\
   -e LANGUAGE_BRAIN_AI_ENDPOINT='https://opencode.ai/zen/go/v1' \\
-  -e LANGUAGE_BRAIN_AI_MODEL='deepseek-v4-flash' \\
+  -e LANGUAGE_BRAIN_AI_MODEL='mimo-v2.5' \\
   -e LANGUAGE_BRAIN_VAULT='/app/vault' \\
   -v /opt/language-brain/vault:/app/vault \\
   -v /opt/language-brain/app/build:/app/static \\
