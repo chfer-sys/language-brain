@@ -12,6 +12,7 @@ for now). ponytail: skip the dep until we need it.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -140,3 +141,108 @@ def init_schema(conn: sqlite3.Connection) -> None:
     """
     conn.executescript(_SCHEMA_DDL)
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# SQLite read helpers (v0.10) — replace JSON file scans
+# ---------------------------------------------------------------------------
+
+
+def list_units_by_type_sqlite(
+    vault_root: str, unit_type: str, *, include_connections: bool = False
+) -> list[dict]:
+    """SQLite-backed replacement for ``list_units_by_type``.
+
+    Returns the same dict shape as the JSON path so callers are drop-in
+    compatible. The ``properties`` field is reconstructed from the JSON
+    string stored in the ``properties`` column.
+
+    If ``include_connections`` is True, the ``connections`` field is
+    reconstructed from the ``edge`` table. This is needed by
+    ``compute_connections`` which appends to the existing connections array.
+
+    If the SQLite database or table doesn't exist, returns an empty list
+    (graceful degradation — the caller can fall back to the JSON path).
+
+    ponytail: ceiling — opens a new connection per call; upgrade path is
+    connection pooling if read throughput becomes a bottleneck.
+    """
+    conn = get_connection(vault_root)
+    try:
+        rows = conn.execute(
+            "SELECT id, type, name, pinyin, properties, created, updated, author_confirmed "
+            "FROM unit WHERE type = ? ORDER BY id",
+            (unit_type,),
+        ).fetchall()
+
+        if include_connections and rows:
+            # Fetch all edges for these units in one query.
+            unit_ids = [row["id"] for row in rows]
+            placeholders = ",".join("?" * len(unit_ids))
+            edge_rows = conn.execute(
+                f"SELECT source_id, target_id, kind, score FROM edge "
+                f"WHERE source_id IN ({placeholders})",
+                unit_ids,
+            ).fetchall()
+            connections_by_source: dict[str, list[dict]] = {}
+            for edge in edge_rows:
+                connections_by_source.setdefault(edge["source_id"], []).append(
+                    {
+                        "to": edge["target_id"],
+                        "kind": edge["kind"],
+                        "score": edge["score"],
+                    }
+                )
+        else:
+            connections_by_source = {}
+
+        return [_row_to_unit_dict(row, connections_by_source) for row in rows]
+    except sqlite3.OperationalError:
+        # Table doesn't exist yet (database not migrated). Return empty list
+        # so callers can fall back to the JSON path.
+        return []
+    finally:
+        conn.close()
+
+
+def _row_to_unit_dict(row: sqlite3.Row, connections_by_source: dict[str, list[dict]]) -> dict:
+    """Reconstruct a unit dict from a SQLite row + pre-fetched connections."""
+    props = json.loads(row["properties"]) if row["properties"] else {}
+    return {
+        "id": row["id"],
+        "type": row["type"],
+        "name": row["name"],
+        "properties": props,
+        "connections": connections_by_source.get(row["id"], []),
+        "created": row["created"],
+        "updated": row["updated"],
+        "author_confirmed": bool(row["author_confirmed"]),
+    }
+
+
+def get_units_by_ids_sqlite(vault_root: str, unit_ids: list[str]) -> dict[str, dict]:
+    """Fetch units by id list from SQLite. Returns a dict keyed by id.
+
+    Used by semantic search to resolve FAISS hit unit_ids to unit data
+    in a single query (instead of N file reads).
+
+    If the SQLite database or table doesn't exist, returns an empty dict
+    (graceful degradation — the caller can fall back to the JSON path).
+    """
+    if not unit_ids:
+        return {}
+    conn = get_connection(vault_root)
+    try:
+        placeholders = ",".join("?" * len(unit_ids))
+        rows = conn.execute(
+            f"SELECT id, type, name, pinyin, properties, created, updated, author_confirmed "
+            f"FROM unit WHERE id IN ({placeholders})",
+            unit_ids,
+        ).fetchall()
+        return {row["id"]: _row_to_unit_dict(row, {}) for row in rows}
+    except sqlite3.OperationalError:
+        # Table doesn't exist yet (database not migrated). Return empty dict
+        # so callers can fall back to the JSON path.
+        return {}
+    finally:
+        conn.close()

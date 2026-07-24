@@ -129,6 +129,7 @@ from typing import Any
 import numpy as np
 
 from api.services.lexical import jaccard, tokenize_sentence
+from api.services.db import list_units_by_type_sqlite
 from api.services.unit_writer import list_units_by_type, write_unit
 
 
@@ -1296,7 +1297,10 @@ def compute_connections(
 
     _validate_vault_root(vault_root)
 
-    sentences = list_units_by_type(vault_root, "sentence")
+    # v0.10: route through SQLite instead of JSON file scan.
+    # include_connections=True reconstructs the connections array from
+    # the edge table so the write side can append to it.
+    sentences = list_units_by_type_sqlite(vault_root, "sentence", include_connections=True)
     lexical_edges, lexical_pairs, _lexical_skipped = (
         _compute_sentence_lexical_edges(sentences)
     )
@@ -1322,7 +1326,8 @@ def compute_connections(
     # and uses no embedder, so its failure mode (no groups on
     # disk) gracefully degrades to "zero group pairs" without
     # affecting the other counts.
-    groups = list_units_by_type(vault_root, "group")
+    # v0.10: route through SQLite.
+    groups = list_units_by_type_sqlite(vault_root, "group", include_connections=True)
     group_edges, group_pairs, _group_skipped = (
         _compute_sentence_group_edges(sentences, groups)
     )
@@ -1334,7 +1339,8 @@ def compute_connections(
     # the OTHER word's ``antonyms`` array. See
     # :func:`_compute_word_opposite_edges` for the full contract,
     # including the "skip unknown targets" decision.
-    words = list_units_by_type(vault_root, "word")
+    # v0.10: route through SQLite.
+    words = list_units_by_type_sqlite(vault_root, "word", include_connections=True)
     opposite_edges, opposite_pairs, symmetry_pairs = (
         _compute_word_opposite_edges(words)
     )
