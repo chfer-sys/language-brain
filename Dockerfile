@@ -9,6 +9,14 @@
 
 FROM python:3.12-slim
 
+# Git info baked in at build time so the /api/version badge reports the
+# real branch + commit of the deployed image. Defaults keep local/test
+# builds working when --build-arg isn't passed.
+ARG GIT_BRANCH=unknown
+ARG GIT_COMMIT=unknown
+ENV LANGUAGE_BRAIN_GIT_BRANCH=$GIT_BRANCH
+ENV LANGUAGE_BRAIN_GIT_COMMIT=$GIT_COMMIT
+
 # System deps that some Python wheels expect.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \

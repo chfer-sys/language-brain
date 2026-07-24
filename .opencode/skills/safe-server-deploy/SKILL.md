@@ -112,10 +112,17 @@ Tell the user about any stash created — they may want to inspect later.
 
 ### 4. Build image on server (3–5 min CPU-only)
 
+The build args inject the server's current git branch + commit into the
+image so the `/api/version` badge reports real info instead of "unknown".
+
 ```bash
 ssh root@192.168.100.101 '
 cd /opt/language-brain/src
-time docker build -f Dockerfile -t language-brain:latest . 2>&1 | tail -20
+git fetch origin 2>&1 | tail -3
+docker build -f Dockerfile \
+  --build-arg GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD)" \
+  --build-arg GIT_COMMIT="$(git rev-parse --short HEAD)" \
+  -t language-brain:latest . 2>&1 | tail -20
 docker images language-brain:latest --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}\t{{.CreatedSince}}"
 '
 ```
